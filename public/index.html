@@ -266,60 +266,90 @@
     text-align: center;
     margin-top: 4px;
   }
-  .library-row {
+  .media-list {
     display: flex;
+    flex-direction: column;
     gap: 8px;
-    overflow-x: auto;
     margin-top: 10px;
-    padding-bottom: 2px;
   }
-  .library-chip {
-    display: inline-flex;
+  .media-card {
+    display: flex;
     align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
+    gap: 10px;
     background: var(--panel2);
     border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 6px 8px 6px 12px;
-    font-size: 13px;
-    color: var(--muted);
+    border-radius: 10px;
+    padding: 10px 12px;
     cursor: pointer;
-    max-width: 160px;
     touch-action: manipulation;
   }
-  .library-chip.active {
+  .media-card.active {
     border-color: var(--accent);
-    color: var(--text);
-    background: rgba(91,140,255,0.15);
+    background: rgba(91,140,255,0.12);
   }
-  .library-chip-name {
+  .media-card.processing {
+    cursor: default;
+  }
+  .media-card-badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: rgba(255,255,255,0.06);
+    border-radius: 6px;
+    padding: 4px 6px;
+  }
+  .media-card-info {
+    flex: 1;
+    min-width: 0;
+  }
+  .media-card-name {
+    font-size: 14px;
+    color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .library-chip-remove {
+  .media-card-meta {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .media-card.processing .media-card-meta {
+    color: var(--accent);
+  }
+  .media-card-progress {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 6px;
+    overflow: hidden;
+  }
+  .media-card-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+  }
+  .media-card-remove {
     flex-shrink: 0;
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
     background: rgba(255,255,255,0.08);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1;
     color: var(--muted);
   }
-  .library-chip-remove:active {
+  .media-card-remove:active {
     background: rgba(255,255,255,0.18);
   }
   #waveWrap {
     cursor: pointer;
-  }
-  .queue-status {
-    color: var(--accent);
-    font-style: italic;
   }
   .leave-warning {
     color: var(--accent2);
@@ -353,10 +383,9 @@
       <span class="file-name" id="fileName">No file selected</span>
     </div>
     <input type="file" id="fileInput" accept="audio/*,video/*" multiple>
-    <div id="libraryRow" class="library-row hidden"></div>
+    <div id="mediaList" class="media-list hidden"></div>
     <div class="status" id="statusMsg"></div>
     <div class="progress-track hidden" id="statusProgress"><div class="progress-fill" id="statusProgressFill"></div></div>
-    <div class="status queue-status hidden" id="queueStatus"></div>
     <div class="status leave-warning" id="leaveWarning">Reloading, going back, or leaving this page will lose everything — the browser will ask you to confirm first.</div>
   </div>
   <div id="importWorkArea" style="display:none"></div>
@@ -473,16 +502,18 @@
 
   // Import queue: files wait here and are processed one at a time (video's real-time
   // analysis pass in particular can take minutes), without blocking the Import button
-  // or disrupting whatever item is currently being edited.
+  // or disrupting whatever item is currently being edited. Each entry is
+  // { id, file, name, status: 'queued'|'importing', progress } so the media list can
+  // render its own card for it, distinct from the mediaLibrary items it becomes.
   var importQueue = [];
+  var nextQueueId = 1;
   var isImporting = false;
 
   var els = {
     importBtn: document.getElementById('importBtn'),
     fileInput: document.getElementById('fileInput'),
     fileName: document.getElementById('fileName'),
-    libraryRow: document.getElementById('libraryRow'),
-    queueStatus: document.getElementById('queueStatus'),
+    mediaList: document.getElementById('mediaList'),
     statusProgress: document.getElementById('statusProgress'),
     statusProgressFill: document.getElementById('statusProgressFill'),
     importWorkArea: document.getElementById('importWorkArea'),
@@ -840,37 +871,101 @@
     item.cents = cents;
   }
 
-  function renderLibraryChips() {
-    els.libraryRow.innerHTML = '';
-    if (mediaLibrary.length < 2) {
-      els.libraryRow.classList.add('hidden');
-      return;
+  // Builds one card for the vertical media list — used for both settled
+  // mediaLibrary items (clickable, removable, shows duration) and in-flight
+  // importQueue items (not clickable, shows "Queued"/"Importing... N%").
+  function buildMediaCard(opts) {
+    var card = document.createElement('div');
+    card.className = 'media-card' + (opts.active ? ' active' : '') + (opts.processing ? ' processing' : '');
+
+    var badge = document.createElement('span');
+    badge.className = 'media-card-badge';
+    badge.textContent = opts.badge;
+    card.appendChild(badge);
+
+    var info = document.createElement('div');
+    info.className = 'media-card-info';
+
+    var nameEl = document.createElement('div');
+    nameEl.className = 'media-card-name';
+    nameEl.textContent = opts.name;
+    info.appendChild(nameEl);
+
+    var metaEl = document.createElement('div');
+    metaEl.className = 'media-card-meta';
+    metaEl.textContent = opts.meta;
+    info.appendChild(metaEl);
+
+    if (opts.showProgress) {
+      var track = document.createElement('div');
+      track.className = 'media-card-progress';
+      var fill = document.createElement('div');
+      fill.className = 'media-card-progress-fill';
+      fill.style.width = Math.round((opts.progress || 0) * 100) + '%';
+      track.appendChild(fill);
+      info.appendChild(track);
     }
-    els.libraryRow.classList.remove('hidden');
-    mediaLibrary.forEach(function (item) {
-      var chip = document.createElement('div');
-      chip.className = 'library-chip' + (item.id === activeMediaId ? ' active' : '');
 
-      var nameSpan = document.createElement('span');
-      nameSpan.className = 'library-chip-name';
-      nameSpan.textContent = item.name;
-      chip.appendChild(nameSpan);
+    card.appendChild(info);
 
+    if (opts.removable) {
       var removeBtn = document.createElement('span');
-      removeBtn.className = 'library-chip-remove';
+      removeBtn.className = 'media-card-remove';
       removeBtn.textContent = '×';
-      chip.appendChild(removeBtn);
-
-      chip.addEventListener('click', function (e) {
-        if (e.target === removeBtn) return;
-        if (item.id !== activeMediaId) activateLibraryItem(item);
-      });
       removeBtn.addEventListener('click', function (e) {
         e.stopPropagation();
-        removeLibraryItem(item.id);
+        opts.onRemove();
       });
+      card.appendChild(removeBtn);
+    }
 
-      els.libraryRow.appendChild(chip);
+    if (opts.onClick) {
+      card.addEventListener('click', opts.onClick);
+    }
+
+    return card;
+  }
+
+  // Single source of truth for the media list: every settled mediaLibrary item
+  // plus every in-flight importQueue item, each as its own card — replaces the
+  // old horizontal chip row (only shown once you had 2+ imports) and the plain
+  // "N queued to import: ..." text line.
+  function renderMediaList() {
+    els.mediaList.innerHTML = '';
+    var hasAny = mediaLibrary.length > 0 || importQueue.length > 0;
+    els.mediaList.classList.toggle('hidden', !hasAny);
+    if (!hasAny) return;
+
+    mediaLibrary.forEach(function (item) {
+      var isActive = item.id === activeMediaId;
+      var duration = item.mode === 'video' ? (item.videoDuration || item.decodedBuffer.duration) : item.decodedBuffer.duration;
+      els.mediaList.appendChild(buildMediaCard({
+        badge: item.mode === 'video' ? 'Video' : 'Audio',
+        name: item.name,
+        meta: isActive ? 'Editing now' : fmtTime(duration),
+        active: isActive,
+        removable: true,
+        onRemove: function () { removeLibraryItem(item.id); },
+        onClick: function () { if (!isActive) activateLibraryItem(item); }
+      }));
+    });
+
+    importQueue.forEach(function (qItem) {
+      var isVideo = isVideoFile(qItem.file);
+      var isImportingThis = qItem.status === 'importing';
+      // Audio decodes near-instantly with no meaningful percentage — showing a
+      // static "0%" that never moves before the card disappears reads as broken.
+      var meta = !isImportingThis ? 'Queued' : (isVideo ? 'Importing... ' + Math.round((qItem.progress || 0) * 100) + '%' : 'Decoding...');
+      els.mediaList.appendChild(buildMediaCard({
+        badge: isVideo ? 'Video' : 'Audio',
+        name: qItem.name,
+        meta: meta,
+        processing: true,
+        showProgress: isImportingThis && isVideo,
+        progress: qItem.progress || 0,
+        removable: qItem.status === 'queued',
+        onRemove: function () { removeQueueItem(qItem.id); }
+      }));
     });
   }
 
@@ -884,7 +979,7 @@
     mediaLibrary.splice(idx, 1);
 
     if (!wasActive) {
-      renderLibraryChips();
+      renderMediaList();
       return;
     }
 
@@ -897,8 +992,21 @@
       decodedBuffer = null;
       els.fileName.textContent = 'No file selected';
       els.editorSection.classList.add('hidden');
-      renderLibraryChips();
+      renderMediaList();
     }
+  }
+
+  // Only lets you drop a not-yet-started queue entry — the one currently
+  // importing has no cancellation path wired up (its capture is already
+  // running against a live video element), so it isn't offered a remove button.
+  function removeQueueItem(id) {
+    var idx = -1;
+    for (var i = 0; i < importQueue.length; i++) {
+      if (importQueue[i].id === id && importQueue[i].status === 'queued') { idx = i; break; }
+    }
+    if (idx === -1) return;
+    importQueue.splice(idx, 1);
+    renderMediaList();
   }
 
   function refreshEditorUI() {
@@ -910,7 +1018,7 @@
     drawWaveform();
     setStatus('');
     els.importBtn.disabled = false;
-    renderLibraryChips();
+    renderMediaList();
   }
 
   function activateLibraryItem(item) {
@@ -969,14 +1077,9 @@
   // current import. This matters most for video: its real-time analysis pass can
   // take minutes, and you shouldn't have to sit and wait before lining up the next
   // file, or lose access to whatever you're already editing while it runs.
-  function renderImportQueueStatus() {
-    if (importQueue.length > 0) {
-      var names = importQueue.map(function (f) { return f.name; }).join(', ');
-      els.queueStatus.textContent = importQueue.length + ' queued to import: ' + names;
-      els.queueStatus.classList.remove('hidden');
-    } else {
-      els.queueStatus.classList.add('hidden');
-    }
+  function isVideoFile(file) {
+    return file.type.indexOf('video') === 0 ||
+      (!file.type && /\.(mp4|mov|m4v|webm|mkv|avi|3gp)$/i.test(file.name));
   }
 
   function finishImportedItem(item) {
@@ -987,8 +1090,8 @@
     } else {
       // Something else is already active/being edited — don't yank it away, just
       // add the new item to the library for whenever it's wanted.
-      renderLibraryChips();
-      setStatus('"' + item.name + '" imported — tap its chip above to switch to it.');
+      renderMediaList();
+      setStatus('"' + item.name + '" imported — tap it in the list to switch to it.');
     }
   }
 
@@ -996,12 +1099,11 @@
     setStatus('"' + fileName + '": ' + msg, isError);
   }
 
-  function importOneFile(file, onDone) {
+  function importOneFile(queueItem, onDone) {
+    var file = queueItem.file;
     setProgress(null);
-    var isVideo = file.type.indexOf('video') === 0 ||
-      (!file.type && /\.(mp4|mov|m4v|webm|mkv|avi|3gp)$/i.test(file.name));
 
-    if (!isVideo) {
+    if (!isVideoFile(file)) {
       setImportStatus(file.name, 'Decoding...');
       var reader = new FileReader();
       reader.onload = function (ev) {
@@ -1050,6 +1152,8 @@
         setImportStatus(file.name, 'Analyzing audio track... ' + Math.round(frac * 100) + '%');
         setProgress(frac);
         updateBackgroundGuard('Importing "' + file.name + '"…', frac * 100);
+        queueItem.progress = frac;
+        renderMediaList();
       }).then(function (buffer) {
         var item = {
           id: nextMediaId++, name: file.name, mode: 'video', file: file,
@@ -1089,11 +1193,15 @@
 
   function processImportQueue() {
     if (isImporting || importQueue.length === 0) return;
-    var file = importQueue.shift();
-    renderImportQueueStatus();
+    var queueItem = importQueue[0];
+    queueItem.status = 'importing';
     isImporting = true;
-    importOneFile(file, function () {
+    renderMediaList();
+    importOneFile(queueItem, function () {
+      var idx = importQueue.indexOf(queueItem);
+      if (idx !== -1) importQueue.splice(idx, 1);
       isImporting = false;
+      renderMediaList();
       processImportQueue();
     });
   }
@@ -1102,8 +1210,10 @@
     var files = Array.prototype.slice.call(e.target.files || []);
     e.target.value = ''; // allow re-selecting the same file(s) again later
     if (files.length === 0) return;
-    importQueue = importQueue.concat(files);
-    renderImportQueueStatus();
+    files.forEach(function (file) {
+      importQueue.push({ id: nextQueueId++, file: file, name: file.name, status: 'queued', progress: 0 });
+    });
+    renderMediaList();
     processImportQueue();
   });
 
