@@ -1,6 +1,11 @@
-// Bump this on every deploy that changes any shell file — activate() uses it to
-// evict the previous version's cache so viewers actually pick up the update.
-var CACHE_NAME = 'pitch-cutter-v1';
+// Bump this on every deploy that changes any shell file — this is the ONLY
+// thing that makes browsers detect an update at all. A service worker is only
+// re-fetched/re-installed when its own script's bytes change; changing
+// index.html alone (without touching this file) is invisible to the update
+// check, so every previous deploy that didn't bump this number was silently
+// serving the very first cached version forever, no matter how many times the
+// server itself got new content.
+var CACHE_NAME = 'pitch-cutter-v2';
 
 var SHELL_FILES = [
   './',
@@ -36,7 +41,11 @@ self.addEventListener('fetch', function (event) {
   if (event.request.method !== 'GET') return;
   event.respondWith(
     caches.match(event.request).then(function (cached) {
-      var networkFetch = fetch(event.request).then(function (response) {
+      // no-cache forces revalidation with the server on every fetch instead of
+      // trusting the browser's own HTTP cache — belt-and-suspenders alongside
+      // the Cache-Control headers in firebase.json, so a background refresh
+      // here can't itself be satisfied from a stale cached response.
+      var networkFetch = fetch(event.request, { cache: 'no-cache' }).then(function (response) {
         if (response && response.ok) {
           var copy = response.clone();
           caches.open(CACHE_NAME).then(function (cache) { cache.put(event.request, copy); });
