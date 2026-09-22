@@ -29,14 +29,20 @@ public class ImportExportService extends Service {
   public int onStartCommand(Intent intent, int flags, int startId) {
     String label = intent != null ? intent.getStringExtra("label") : null;
     if (label == null) label = "Processing your file…";
+    // -1 = indeterminate/no bar (e.g. before the first progress callback fires).
+    int progress = intent != null ? intent.getIntExtra("progress", -1) : -1;
 
-    Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+    NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("Offline Pitch Cutter")
       .setContentText(label)
       .setSmallIcon(R.mipmap.ic_launcher)
       .setOngoing(true)
-      .setPriority(NotificationCompat.PRIORITY_LOW)
-      .build();
+      .setPriority(NotificationCompat.PRIORITY_LOW);
+
+    if (progress >= 0) {
+      builder.setProgress(100, Math.min(progress, 100), false);
+    }
+    Notification notification = builder.build();
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
       startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);

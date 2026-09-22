@@ -441,6 +441,11 @@
   function startBackgroundGuard(label) {
     if (backgroundGuard) backgroundGuard.start({ label: label }).catch(function () {});
   }
+  // Re-posts the same foreground notification with an updated progress bar —
+  // call this from the same progress callbacks that already drive setProgress().
+  function updateBackgroundGuard(label, progressPct) {
+    if (backgroundGuard) backgroundGuard.start({ label: label, progress: Math.round(progressPct) }).catch(function () {});
+  }
   function stopBackgroundGuard() {
     if (backgroundGuard) backgroundGuard.stop().catch(function () {});
   }
@@ -1044,6 +1049,7 @@
       captureVideoAudioTrack(videoEl, function (frac) {
         setImportStatus(file.name, 'Analyzing audio track... ' + Math.round(frac * 100) + '%');
         setProgress(frac);
+        updateBackgroundGuard('Importing "' + file.name + '"…', frac * 100);
       }).then(function (buffer) {
         var item = {
           id: nextMediaId++, name: file.name, mode: 'video', file: file,
@@ -2212,6 +2218,7 @@
             var pct = Math.round(Math.max(0, Math.min(100, frac * 100)));
             setStatus('Exporting... ' + pct + '%');
             setProgress(frac);
+            updateBackgroundGuard('Exporting video…', pct);
             // Stall fallback: if wall time runs well past the clip length without the
             // audio ending naturally, force completion rather than hang forever.
             if (elapsedWall > clipDuration + 5) {
