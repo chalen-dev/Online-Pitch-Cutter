@@ -479,6 +479,15 @@
     if (backgroundGuard) backgroundGuard.stop().catch(function () {});
   }
 
+  // On the Android APK build, decodes a video's audio track natively via
+  // MediaExtractor+MediaCodec (see AudioExtractorPlugin.java) instead of
+  // playing the video through in real time. That native decode has no
+  // Surface attached at all, so — unlike captureVideoAudioTrack below — it
+  // isn't tied to the screen being on or the app being visible; it's the
+  // same class of operation as a background download. No-op on the plain
+  // web/PWA build, which falls back to the real-time capture path.
+  var audioExtractorPlugin = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AudioExtractor) || null;
+
   var mode = 'audio';         // 'audio' | 'video'
   var decodedBuffer = null;   // AudioBuffer: decoded directly (audio) or captured from video's audio track
   var trimStart = 0;          // seconds
@@ -1129,6 +1138,39 @@
       return;
     }
 
+    if (audioExtractorPlugin) {
+      setImportStatus(file.name, 'Decoding...');
+      startBackgroundGuard('Importing "' + file.name + '"…');
+      blobToBase64(file).then(function (base64Data) {
+        return audioExtractorPlugin.extractAudio({ base64Data: base64Data });
+      }).then(function (result) {
+        return fetch(window.Capacitor.convertFileSrc(result.path)).then(function (r) { return r.arrayBuffer(); });
+      }).then(function (arrayBuf) {
+        return new Promise(function (resolve, reject) {
+          getAudioCtx().decodeAudioData(arrayBuf, resolve, reject);
+        });
+      }).then(function (buffer) {
+        var item = {
+          id: nextMediaId++, name: file.name, mode: 'video', file: file,
+          decodedBuffer: buffer, trimStart: 0, trimEnd: buffer.duration,
+          semitones: 0, cents: 0, videoDuration: buffer.duration
+        };
+        stopBackgroundGuard();
+        finishImportedItem(item);
+        onDone();
+      }).catch(function (err) {
+        stopBackgroundGuard();
+        setImportStatus(file.name, 'Could not read audio from this video: ' + err.message, true);
+        onDone();
+      });
+      return;
+    }
+
+    // ---- Fallback for the plain web/PWA build: no native decoder available,
+    // so fall back to playing the video through in real time and tapping its
+    // audio live (see the big comment on createPitchShifterNode's neighbor,
+    // captureVideoAudioTrack, for why this is the only dependency-free way to
+    // pull audio out of a muxed container in a browser).
     setImportStatus(file.name, 'Loading video...');
     var url = URL.createObjectURL(file);
     var videoEl = createWorkVideoElement();
