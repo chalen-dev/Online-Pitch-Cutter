@@ -564,7 +564,11 @@
 
   // Session media library: every imported file stays here (in memory, for this page
   // session only) so switching between them doesn't require re-importing or, for
-  // video, re-running the real-time audio-capture pass a second time.
+  // video, re-running the real-time audio-capture pass a second time. On the
+  // Android app, entries here are also mirrored into IndexedDB (see
+  // persistMediaItem/restorePersistedMediaLibrary below) so the library survives
+  // closing and reopening the app — the website stays purely in-memory, per the
+  // top-of-file comment.
   var mediaLibrary = []; // { id, name, mode, file, decodedBuffer, trimStart, trimEnd, semitones, cents, videoDuration }
   var activeMediaId = null;
   var nextMediaId = 1;
@@ -973,7 +977,143 @@
     item.trimEnd = trimEnd;
     item.semitones = semitones;
     item.cents = cents;
+    persistMediaItem(item);
   }
+
+  // ---------- Persistent media library (Android app only) ----------
+  // The website intentionally keeps everything in memory only (see the
+  // top-of-file comment) — reloading it always starts clean. The Android app
+  // is different: the user asked to not have to re-import files every time
+  // they close and reopen it. IndexedDB is the WebView's normal on-disk
+  // storage and survives closing/reopening the app (though not an app data
+  // clear or uninstall), so each library item's original file plus its
+  // trim/pitch settings are mirrored there. Every function below is a no-op
+  // on the plain web build, where window.Capacitor doesn't exist.
+  var mediaDBPromise = null;
+  function openMediaDB() {
+    if (!window.Capacitor) return Promise.reject(new Error('not the Android app'));
+    if (mediaDBPromise) return mediaDBPromise;
+    mediaDBPromise = new Promise(function (resolve, reject) {
+      var req = indexedDB.open('pitch-cutter-media', 1);
+      req.onupgradeneeded = function () {
+        req.result.createObjectStore('items', { keyPath: 'id' });
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+    return mediaDBPromise;
+  }
+
+  // Writes (or overwrites) one item's persisted record. Called from every
+  // place the in-memory mediaLibrary entry itself changes (import, trim/pitch
+  // edits, backgrounding) so the two never drift apart. Fire-and-forget:
+  // persistence is a convenience layered on top of the real in-memory state,
+  // never allowed to block or fail the editing flow it's shadowing.
+  function persistMediaItem(item) {
+    if (!window.Capacitor) return;
+    openMediaDB().then(function (db) {
+      db.transaction('items', 'readwrite').objectStore('items').put({
+        id: item.id, name: item.name, mode: item.mode, blob: item.file,
+        trimStart: item.trimStart, trimEnd: item.trimEnd,
+        semitones: item.semitones, cents: item.cents, videoDuration: item.videoDuration
+      });
+    }).catch(function (err) { console.warn('Could not persist media item:', err); });
+  }
+
+  function deletePersistedMediaItem(id) {
+    if (!window.Capacitor) return;
+    openMediaDB().then(function (db) {
+      db.transaction('items', 'readwrite').objectStore('items').delete(id);
+    }).catch(function (err) { console.warn('Could not delete persisted media item:', err); });
+  }
+
+  function loadPersistedMediaItems() {
+    return openMediaDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var req = db.transaction('items', 'readonly').objectStore('items').getAll();
+        req.onsuccess = function () { resolve(req.result || []); };
+        req.onerror = function () { reject(req.error); };
+      });
+    });
+  }
+
+  // Re-decodes one persisted file's audio the same way importOneFile does for
+  // a freshly picked file — restoring isn't given a shortcut here, since the
+  // decodedBuffer (an AudioBuffer) can't itself be stored in IndexedDB.
+  function redecodeAudioFromBlob(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        getAudioCtx().decodeAudioData(ev.target.result.slice(0), resolve, reject);
+      };
+      reader.onerror = function () { reject(reader.error); };
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+  function redecodeVideoAudioFromBlob(blob) {
+    return blobToBase64(blob).then(function (base64Data) {
+      return audioExtractorPlugin.extractAudio({ base64Data: base64Data });
+    }).then(function (result) {
+      return fetch(window.Capacitor.convertFileSrc(result.path)).then(function (r) { return r.arrayBuffer(); });
+    }).then(function (arrayBuf) {
+      return new Promise(function (resolve, reject) {
+        getAudioCtx().decodeAudioData(arrayBuf, resolve, reject);
+      });
+    });
+  }
+
+  // Runs once at startup on the Android app to bring back whatever was
+  // imported in a previous session. Restores one item at a time — if a
+  // single entry fails to decode (e.g. a corrupted stored blob), it's
+  // dropped from storage and the rest still come back, instead of the whole
+  // restore giving up.
+  function restorePersistedMediaLibrary() {
+    if (!window.Capacitor || !audioExtractorPlugin) return;
+    loadPersistedMediaItems().then(function (records) {
+      if (!records.length) return;
+      records.sort(function (a, b) { return a.id - b.id; });
+      nextMediaId = Math.max(nextMediaId, records[records.length - 1].id + 1);
+      // Re-decoding a restored video goes through the same native MediaCodec
+      // pass a fresh import does, which can take a while on some devices —
+      // show something immediately so the app doesn't look frozen while it
+      // works through the list.
+      setStatus('Restoring ' + records.length + ' previously imported file(s)...');
+
+      var chain = Promise.resolve();
+      records.forEach(function (rec) {
+        chain = chain.then(function () {
+          setStatus('Restoring "' + rec.name + '"...');
+          var decode = rec.mode === 'video' ? redecodeVideoAudioFromBlob(rec.blob) : redecodeAudioFromBlob(rec.blob);
+          return decode.then(function (buffer) {
+            var item = {
+              id: rec.id, name: rec.name, mode: rec.mode, file: rec.blob,
+              decodedBuffer: buffer, trimStart: rec.trimStart, trimEnd: rec.trimEnd,
+              semitones: rec.semitones, cents: rec.cents, videoDuration: rec.videoDuration
+            };
+            mediaLibrary.push(item);
+            if (activeMediaId === null) activateLibraryItem(item);
+          }).catch(function (err) {
+            console.warn('Dropping unrestorable media item "' + rec.name + '":', err);
+            deletePersistedMediaItem(rec.id);
+          });
+        });
+      });
+      chain.then(function () {
+        renderMediaList();
+        if (mediaLibrary.length) setStatus(mediaLibrary.length + ' previously imported file(s) restored.');
+      });
+    }).catch(function (err) { console.warn('Could not restore media library:', err); });
+  }
+
+  // Backgrounding (screen lock, switching apps, or the app being put away)
+  // is the closest thing to a reliable "about to close" signal a WebView
+  // gets — unlike beforeunload/pagehide, which Android doesn't guarantee
+  // fires before killing a backgrounded app's process. Flush whatever's
+  // currently being edited to storage right before that happens, so trim/
+  // pitch tweaks made just before switching away aren't lost.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden' && window.Capacitor) saveActiveStateToLibrary();
+  });
 
   // Builds one card for the vertical media list — used for both settled
   // mediaLibrary items (clickable, removable, shows duration) and in-flight
@@ -1105,6 +1245,7 @@
     if (idx === -1) return;
     var wasActive = (id === activeMediaId);
     mediaLibrary.splice(idx, 1);
+    deletePersistedMediaItem(id);
 
     if (!wasActive) {
       renderMediaList();
@@ -1224,6 +1365,7 @@
 
   function finishImportedItem(item) {
     mediaLibrary.push(item);
+    persistMediaItem(item);
     if (activeMediaId === null) {
       // Nothing active yet (first import, or the library was emptied) — reveal it.
       activateLibraryItem(item);
@@ -2768,6 +2910,7 @@
   }
 
   refreshPitchLabels();
+  restorePersistedMediaLibrary();
 })();
 </script>
 <script>
