@@ -635,8 +635,234 @@
   };
 
   function getAudioCtx() {
-    if (!audioCtx) audioCtx = new AudioContextClass();
+    if (!audioCtx) {
+      audioCtx = new AudioContextClass();
+      ensureAudioWorkletReady(audioCtx);
+    }
     return audioCtx;
+  }
+
+  // ---------- AudioWorklet setup (used by the live pitch preview and video-
+  // import capture below, each with a ScriptProcessorNode fallback) ----------
+  // A ScriptProcessorNode's callback runs on the main JS thread, so it stalls
+  // whenever that thread does — including for the whole time a native browser
+  // dialog (e.g. the "Leave site?" unsaved-changes prompt) is up, which is
+  // exactly what caused live preview playback to stutter/repeat if that
+  // dialog appeared mid-playback: the browser has to fill the gap with
+  // something, and repeating the last buffer is a common choice. An
+  // AudioWorkletNode's process() runs on a dedicated real-time audio thread
+  // instead, so it keeps running through a blocked main thread. addModule()
+  // is async and can fail on some older/unusual browsers, so this is kicked
+  // off once per AudioContext as soon as it's created, and every call site
+  // below falls back to the original ScriptProcessorNode implementation if
+  // it isn't ready or fails — this can only ever be as reliable as before,
+  // never less.
+  var audioWorkletState = null; // null = pending, 'ready', or 'failed'
+  var audioWorkletReadyPromise = null;
+  // AudioWorkletProcessor runs in its own separate global scope with no access
+  // to this file's functions/closures, so the phase-vocoder algorithm below is
+  // a self-contained copy of fftInPlace/processHop further down in this file
+  // (same math, written out again because it has to be — keep both in sync if
+  // the algorithm ever changes).
+  var AUDIO_WORKLET_MODULE_SOURCE = [
+    'function fftInPlace(data, N, dir) {',
+    '  for (var i = 1, j = 0; i < N; i++) {',
+    '    var bit = N >> 1;',
+    '    for (; j & bit; bit >>= 1) j ^= bit;',
+    '    j ^= bit;',
+    '    if (i < j) {',
+    '      var tr = data[2 * i], ti = data[2 * i + 1];',
+    '      data[2 * i] = data[2 * j]; data[2 * i + 1] = data[2 * j + 1];',
+    '      data[2 * j] = tr; data[2 * j + 1] = ti;',
+    '    }',
+    '  }',
+    '  for (var len = 2; len <= N; len <<= 1) {',
+    '    var ang = dir * 2 * Math.PI / len;',
+    '    var wr0 = Math.cos(ang), wi0 = Math.sin(ang);',
+    '    for (var i2 = 0; i2 < N; i2 += len) {',
+    '      var curWr = 1, curWi = 0;',
+    '      for (var j2 = 0; j2 < len / 2; j2++) {',
+    '        var aRe = data[2 * (i2 + j2)], aIm = data[2 * (i2 + j2) + 1];',
+    '        var bRe0 = data[2 * (i2 + j2 + len / 2)], bIm0 = data[2 * (i2 + j2 + len / 2) + 1];',
+    '        var bRe = bRe0 * curWr - bIm0 * curWi;',
+    '        var bIm = bRe0 * curWi + bIm0 * curWr;',
+    '        data[2 * (i2 + j2)] = aRe + bRe;',
+    '        data[2 * (i2 + j2) + 1] = aIm + bIm;',
+    '        data[2 * (i2 + j2 + len / 2)] = aRe - bRe;',
+    '        data[2 * (i2 + j2 + len / 2) + 1] = aIm - bIm;',
+    '        var nWr = curWr * wr0 - curWi * wi0;',
+    '        var nWi = curWr * wi0 + curWi * wr0;',
+    '        curWr = nWr; curWi = nWi;',
+    '      }',
+    '    }',
+    '  }',
+    '  if (dir === 1) { for (var k = 0; k < 2 * N; k++) data[k] /= N; }',
+    '}',
+    'var FFT_FRAME_SIZE = 2048;',
+    'var OSAMP = 4;',
+    'var STEP_SIZE = FFT_FRAME_SIZE / OSAMP;',
+    'var HALF_N = FFT_FRAME_SIZE / 2;',
+    'var FREQ_PER_BIN = sampleRate / FFT_FRAME_SIZE;',
+    'var EXPECTED_PHASE_INC = 2 * Math.PI * STEP_SIZE / FFT_FRAME_SIZE;',
+    'var PV_WINDOW = new Float32Array(FFT_FRAME_SIZE);',
+    'for (var wi = 0; wi < FFT_FRAME_SIZE; wi++) {',
+    '  PV_WINDOW[wi] = 0.5 - 0.5 * Math.cos((2 * Math.PI * wi) / (FFT_FRAME_SIZE - 1));',
+    '}',
+    'function makeChannelState() {',
+    '  return {',
+    '    frameBuf: new Float32Array(FFT_FRAME_SIZE),',
+    '    outAccum: new Float32Array(FFT_FRAME_SIZE),',
+    '    weightAccum: new Float32Array(FFT_FRAME_SIZE),',
+    '    lastPhase: new Float32Array(HALF_N + 1),',
+    '    sumPhase: new Float32Array(HALF_N + 1),',
+    '    fftBuf: new Float32Array(FFT_FRAME_SIZE * 2),',
+    '    anaFreq: new Float32Array(HALF_N + 1),',
+    '    anaMagn: new Float32Array(HALF_N + 1),',
+    '    synFreq: new Float32Array(HALF_N + 1),',
+    '    synMagn: new Float32Array(HALF_N + 1)',
+    '  };',
+    '}',
+    'function processHop(st, newSamples, pitchRatio, outHop) {',
+    '  var keep = FFT_FRAME_SIZE - STEP_SIZE;',
+    '  for (var i = 0; i < keep; i++) st.frameBuf[i] = st.frameBuf[i + STEP_SIZE];',
+    '  for (var i2 = 0; i2 < STEP_SIZE; i2++) st.frameBuf[keep + i2] = newSamples[i2];',
+    '  var fb = st.fftBuf;',
+    '  for (var k = 0; k < FFT_FRAME_SIZE; k++) {',
+    '    fb[2 * k] = st.frameBuf[k] * PV_WINDOW[k];',
+    '    fb[2 * k + 1] = 0;',
+    '  }',
+    '  fftInPlace(fb, FFT_FRAME_SIZE, -1);',
+    '  for (var k1 = 0; k1 <= HALF_N; k1++) {',
+    '    var re = fb[2 * k1], im = fb[2 * k1 + 1];',
+    '    var magn = Math.sqrt(re * re + im * im);',
+    '    var phase = Math.atan2(im, re);',
+    '    var delta = phase - st.lastPhase[k1];',
+    '    st.lastPhase[k1] = phase;',
+    '    delta -= k1 * EXPECTED_PHASE_INC;',
+    '    delta -= 2 * Math.PI * Math.round(delta / (2 * Math.PI));',
+    '    var binDeviation = delta * OSAMP / (2 * Math.PI);',
+    '    st.anaFreq[k1] = (k1 + binDeviation) * FREQ_PER_BIN;',
+    '    st.anaMagn[k1] = magn;',
+    '  }',
+    '  for (var k2 = 0; k2 <= HALF_N; k2++) { st.synMagn[k2] = 0; st.synFreq[k2] = 0; }',
+    '  for (var k3 = 0; k3 <= HALF_N; k3++) {',
+    '    var destBin = Math.round(k3 * pitchRatio);',
+    '    if (destBin >= 0 && destBin <= HALF_N) {',
+    '      st.synMagn[destBin] += st.anaMagn[k3];',
+    '      st.synFreq[destBin] = st.anaFreq[k3] * pitchRatio;',
+    '    }',
+    '  }',
+    '  for (var k4 = 0; k4 <= HALF_N; k4++) {',
+    '    var magn2 = st.synMagn[k4];',
+    '    var freq = st.synFreq[k4];',
+    '    var binDeviation2 = (freq - k4 * FREQ_PER_BIN) / FREQ_PER_BIN;',
+    '    var deltaPhase = binDeviation2 * 2 * Math.PI / OSAMP;',
+    '    deltaPhase += k4 * EXPECTED_PHASE_INC;',
+    '    st.sumPhase[k4] += deltaPhase;',
+    '    var ph = st.sumPhase[k4];',
+    '    fb[2 * k4] = magn2 * Math.cos(ph);',
+    '    fb[2 * k4 + 1] = magn2 * Math.sin(ph);',
+    '  }',
+    '  fb[1] = 0;',
+    '  fb[2 * HALF_N + 1] = 0;',
+    '  for (var k5 = HALF_N + 1; k5 < FFT_FRAME_SIZE; k5++) {',
+    '    var mirror = FFT_FRAME_SIZE - k5;',
+    '    fb[2 * k5] = fb[2 * mirror];',
+    '    fb[2 * k5 + 1] = -fb[2 * mirror + 1];',
+    '  }',
+    '  fftInPlace(fb, FFT_FRAME_SIZE, 1);',
+    '  for (var n = 0; n < FFT_FRAME_SIZE; n++) {',
+    '    st.outAccum[n] += fb[2 * n] * PV_WINDOW[n];',
+    '    st.weightAccum[n] += PV_WINDOW[n] * PV_WINDOW[n];',
+    '  }',
+    '  for (var o = 0; o < STEP_SIZE; o++) {',
+    '    var w = st.weightAccum[o];',
+    '    outHop[o] = w > 1e-6 ? st.outAccum[o] / w : 0;',
+    '  }',
+    '  var keep2 = FFT_FRAME_SIZE - STEP_SIZE;',
+    '  for (var m = 0; m < keep2; m++) { st.outAccum[m] = st.outAccum[m + STEP_SIZE]; st.weightAccum[m] = st.weightAccum[m + STEP_SIZE]; }',
+    '  for (var m2 = keep2; m2 < FFT_FRAME_SIZE; m2++) { st.outAccum[m2] = 0; st.weightAccum[m2] = 0; }',
+    '}',
+    'class PitchShifterProcessor extends AudioWorkletProcessor {',
+    '  static get parameterDescriptors() {',
+    '    return [{ name: "pitchRatio", defaultValue: 1, minValue: 0.1, maxValue: 8, automationRate: "k-rate" }];',
+    '  }',
+    '  constructor() {',
+    '    super();',
+    '    this.states = [makeChannelState(), makeChannelState()];',
+    '    this.inBuf = [new Float32Array(STEP_SIZE), new Float32Array(STEP_SIZE)];',
+    '    this.inFill = 0;',
+    '    this.outBuf = [new Float32Array(STEP_SIZE), new Float32Array(STEP_SIZE)];',
+    '    this.outFill = 0;',
+    '    this.outReadPos = 0;',
+    '  }',
+    '  process(inputs, outputs, parameters) {',
+    '    var ratio = parameters.pitchRatio[0];',
+    '    var input = inputs[0];',
+    '    var output = outputs[0];',
+    '    var inCh0 = input && input[0] ? input[0] : null;',
+    '    var inCh1 = input && input[1] ? input[1] : null;',
+    '    var frames = output[0].length;',
+    '    for (var i = 0; i < frames; i++) {',
+    '      this.inBuf[0][this.inFill] = inCh0 ? inCh0[i] : 0;',
+    '      this.inBuf[1][this.inFill] = inCh1 ? inCh1[i] : 0;',
+    '      this.inFill++;',
+    '      if (this.inFill === STEP_SIZE) {',
+    '        processHop(this.states[0], this.inBuf[0], ratio, this.outBuf[0]);',
+    '        processHop(this.states[1], this.inBuf[1], ratio, this.outBuf[1]);',
+    '        this.inFill = 0;',
+    '        this.outFill = STEP_SIZE;',
+    '        this.outReadPos = 0;',
+    '      }',
+    '      if (this.outReadPos < this.outFill) {',
+    '        output[0][i] = this.outBuf[0][this.outReadPos];',
+    '        output[1][i] = this.outBuf[1][this.outReadPos];',
+    '        this.outReadPos++;',
+    '      } else {',
+    '        output[0][i] = 0;',
+    '        output[1][i] = 0;',
+    '      }',
+    '    }',
+    '    return true;',
+    '  }',
+    '}',
+    'registerProcessor("pitch-shifter-processor", PitchShifterProcessor);',
+    'class AudioCaptureProcessor extends AudioWorkletProcessor {',
+    '  process(inputs) {',
+    '    var input = inputs[0];',
+    '    var frames = (input && input[0] && input[0].length) || 128;',
+    '    var ch0 = new Float32Array(frames);',
+    '    var ch1 = new Float32Array(frames);',
+    '    if (input && input[0]) ch0.set(input[0]);',
+    '    if (input && input[1]) ch1.set(input[1]);',
+    '    this.port.postMessage({ ch0: ch0, ch1: ch1 }, [ch0.buffer, ch1.buffer]);',
+    '    return true;',
+    '  }',
+    '}',
+    'registerProcessor("audio-capture-processor", AudioCaptureProcessor);'
+  ].join('\n');
+
+  function ensureAudioWorkletReady(ctx) {
+    if (audioWorkletReadyPromise) return audioWorkletReadyPromise;
+    if (!ctx.audioWorklet) {
+      audioWorkletState = 'failed';
+      audioWorkletReadyPromise = Promise.resolve(false);
+      return audioWorkletReadyPromise;
+    }
+    var blob = new Blob([AUDIO_WORKLET_MODULE_SOURCE], { type: 'application/javascript' });
+    var url = URL.createObjectURL(blob);
+    audioWorkletReadyPromise = ctx.audioWorklet.addModule(url).then(function () {
+      audioWorkletState = 'ready';
+      return true;
+    }).catch(function (err) {
+      console.warn('AudioWorklet unavailable, using ScriptProcessorNode fallback:', err);
+      audioWorkletState = 'failed';
+      return false;
+    }).then(function (result) {
+      URL.revokeObjectURL(url);
+      return result;
+    });
+    return audioWorkletReadyPromise;
   }
 
   // ---------- Live pitch-shift preview (real-time, ScriptProcessorNode) ----------
@@ -660,13 +886,16 @@
   // verified first (round-trip identity, a known pure-tone transform, and Parseval
   // energy conservation) before trusting anything built on it.
   //
-  // Deliberately built on the older, deprecated ScriptProcessorNode instead of
-  // AudioWorkletNode: AudioWorkletNode requires ctx.audioWorklet.addModule() to
-  // asynchronously fetch/compile a separate module (here, from a Blob URL), and
-  // that step has been observed to silently fail on some Android Chrome/WebView
-  // builds under file:// origins — exactly how this app is normally opened. Read
-  // via node.pitchRatio (a plain mutable property, not an AudioParam) so pitch
-  // changes apply on the very next processed hop with no automation involved.
+  // This is the fallback implementation, built on the older, deprecated
+  // ScriptProcessorNode — createPitchShifterNode above tries an
+  // AudioWorklet-based node first and only falls back to this one if that
+  // isn't available. Kept around because AudioWorkletNode's addModule() is
+  // async and has been observed to silently fail on some older/unusual
+  // browsers, and because this exact implementation is already verified (see
+  // below) — reusing it as the fallback is safer than inventing a second new
+  // thing. Read via node.pitchRatio (a plain mutable property, not an
+  // AudioParam) so pitch changes apply on the very next processed hop with no
+  // automation involved.
 
   // In-place iterative radix-2 Cooley-Tukey FFT on an interleaved
   // [re0,im0,re1,im1,...] array. dir: -1 = forward, +1 = inverse (inverse includes
@@ -707,7 +936,34 @@
     }
   }
 
+  // Tries the AudioWorklet-based node first (immune to main-thread stalls —
+  // see the comment on ensureAudioWorkletReady above); falls back to the
+  // ScriptProcessorNode implementation below if the module isn't ready yet
+  // or construction fails for any reason. Either way, the returned node
+  // exposes the same `.pitchRatio` mutable property so callers don't need
+  // to know or care which implementation they got.
   function createPitchShifterNode(ctx) {
+    if (audioWorkletState === 'ready') {
+      try {
+        var workletNode = new AudioWorkletNode(ctx, 'pitch-shifter-processor', {
+          numberOfInputs: 1, numberOfOutputs: 1,
+          channelCount: 2, channelCountMode: 'explicit',
+          outputChannelCount: [2]
+        });
+        var ratioParam = workletNode.parameters.get('pitchRatio');
+        Object.defineProperty(workletNode, 'pitchRatio', {
+          get: function () { return ratioParam.value; },
+          set: function (v) { ratioParam.value = v; }
+        });
+        return workletNode;
+      } catch (err) {
+        console.warn('AudioWorkletNode construction failed, using ScriptProcessorNode fallback:', err);
+      }
+    }
+    return createPitchShifterNodeLegacy(ctx);
+  }
+
+  function createPitchShifterNodeLegacy(ctx) {
     var fftFrameSize = 2048;
     var osamp = 4;
     var stepSize = fftFrameSize / osamp; // 512 — analysis hop == synthesis hop
@@ -1588,7 +1844,12 @@
 
   // Plays the video through once (silently, via Web Audio) to capture its raw PCM samples.
   // decodeAudioData cannot pull an audio track out of a muxed video container directly,
-  // so this is the only dependency-free way to get at it.
+  // so this is the only dependency-free way to get at it. Uses the AudioWorklet-based
+  // capture node when it's ready (see ensureAudioWorkletReady above) so the capture keeps
+  // running even if the main thread stalls — e.g. behind a native "Leave site?" dialog —
+  // falling back to the original ScriptProcessorNode approach otherwise. The two only
+  // differ in how they're constructed and hand back each block of samples; everything
+  // else (driving playback, flattening chunks, detecting a bad capture) is shared.
   function captureVideoAudioTrack(videoEl, onProgress) {
     return new Promise(function (resolve, reject) {
       var ctx = getAudioCtx();
@@ -1600,8 +1861,6 @@
         return;
       }
 
-      var bufferSize = 4096;
-      var processor = ctx.createScriptProcessor(bufferSize, 2, 2);
       var chunksL = [];
       var chunksR = [];
       var totalLength = 0;
@@ -1617,11 +1876,44 @@
         return out;
       }
 
+      function onChunk(ch0, ch1) {
+        chunksL.push(ch0);
+        chunksR.push(ch1);
+        totalLength += ch0.length;
+        if (onProgress && videoEl.duration) {
+          onProgress(videoEl.currentTime / videoEl.duration);
+        }
+      }
+
+      var useWorklet = audioWorkletState === 'ready';
+      var captureNode;
+      if (useWorklet) {
+        try {
+          captureNode = new AudioWorkletNode(ctx, 'audio-capture-processor', {
+            numberOfInputs: 1, numberOfOutputs: 1,
+            channelCount: 2, channelCountMode: 'explicit',
+            outputChannelCount: [2]
+          });
+          captureNode.port.onmessage = function (e) { onChunk(e.data.ch0, e.data.ch1); };
+        } catch (err) {
+          console.warn('AudioWorkletNode capture failed, using ScriptProcessorNode fallback:', err);
+          useWorklet = false;
+        }
+      }
+      if (!useWorklet) {
+        captureNode = ctx.createScriptProcessor(4096, 2, 2);
+        captureNode.onaudioprocess = function (e) {
+          var inBuf = e.inputBuffer;
+          onChunk(new Float32Array(inBuf.getChannelData(0)), new Float32Array(inBuf.getChannelData(1)));
+        };
+      }
+
       function finish() {
         if (finished) return;
         finished = true;
-        processor.onaudioprocess = null;
-        try { processor.disconnect(); } catch (e) {}
+        if (useWorklet) captureNode.port.onmessage = null;
+        else captureNode.onaudioprocess = null;
+        try { captureNode.disconnect(); } catch (e) {}
         try { source.disconnect(); } catch (e) {}
         videoEl.removeEventListener('ended', finish);
 
@@ -1638,18 +1930,8 @@
         resolve(outBuffer);
       }
 
-      processor.onaudioprocess = function (e) {
-        var inBuf = e.inputBuffer;
-        chunksL.push(new Float32Array(inBuf.getChannelData(0)));
-        chunksR.push(new Float32Array(inBuf.getChannelData(1)));
-        totalLength += inBuf.length;
-        if (onProgress && videoEl.duration) {
-          onProgress(videoEl.currentTime / videoEl.duration);
-        }
-      };
-
-      source.connect(processor);
-      processor.connect(ctx.destination);
+      source.connect(captureNode);
+      captureNode.connect(ctx.destination);
 
       videoEl.addEventListener('ended', finish);
       videoEl.currentTime = 0;
