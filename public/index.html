@@ -1,0 +1,2232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Offline Pitch Cutter</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#121317">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Pitch Cutter">
+<style>
+  :root {
+    --bg: #121317;
+    --panel: #1c1e24;
+    --panel2: #24262e;
+    --border: #33353d;
+    --text: #eef0f3;
+    --muted: #9aa0ac;
+    --accent: #5b8cff;
+    --accent2: #ff6b6b;
+    --wave: #5b8cff;
+    --wave-dim: #33385a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+    overscroll-behavior: none;
+  }
+  #app {
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 16px 16px 40px;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 4px 0 16px;
+    text-align: center;
+    color: var(--text);
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  .import-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 11px 16px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .btn:active { background: #2c2f38; }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn.primary:active { background: #4a76e0; }
+  .btn.wide { width: 100%; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .file-name {
+    font-size: 13px;
+    color: var(--muted);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #waveWrap {
+    position: relative;
+    width: 100%;
+    touch-action: none;
+  }
+  canvas#wave {
+    width: 100%;
+    height: 120px;
+    display: block;
+    border-radius: 8px;
+    background: #0c0d10;
+  }
+  .trim-times {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+    gap: 10px;
+  }
+  .time-field {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .time-field label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .time-field input {
+    width: 78px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 7px 6px;
+    font-size: 15px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .duration-badge {
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 10px;
+  }
+  .control-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  .control-hint {
+    font-size: 12px;
+    color: var(--muted);
+    margin: -2px 0 12px 0;
+  }
+  .control-label {
+    width: 92px;
+    font-size: 14px;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+  .stepper-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 20px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    touch-action: manipulation;
+  }
+  .stepper-btn:active { background: #2c2f38; }
+  input[type="range"] {
+    flex: 1;
+    /* Without this, a flex item's default min-width is its own intrinsic width, so
+       the slider refuses to shrink below that on a narrow phone screen — it pushes
+       the value-badge number past the edge of the viewport instead of giving up
+       space to it. */
+    min-width: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #fff;
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #fff;
+    cursor: pointer;
+  }
+  .value-badge {
+    width: 54px;
+    text-align: right;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .transport-row {
+    display: flex;
+    gap: 10px;
+  }
+  .playback-row {
+    margin-top: 14px;
+  }
+  .status {
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    min-height: 18px;
+    margin-top: 6px;
+  }
+  .status.error { color: var(--accent2); }
+  .hidden { display: none !important; }
+  #fileInput { display: none; }
+  .reset-link {
+    display: block;
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 4px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  #videoContainer {
+    width: 100%;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #000;
+  }
+  #videoContainer video {
+    width: 100%;
+    max-height: 320px;
+    display: block;
+    background: #000;
+  }
+  .format-note {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 4px;
+  }
+  .library-row {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    margin-top: 10px;
+    padding-bottom: 2px;
+  }
+  .library-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 8px 6px 12px;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+    max-width: 160px;
+    touch-action: manipulation;
+  }
+  .library-chip.active {
+    border-color: var(--accent);
+    color: var(--text);
+    background: rgba(91,140,255,0.15);
+  }
+  .library-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .library-chip-remove {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--muted);
+  }
+  .library-chip-remove:active {
+    background: rgba(255,255,255,0.18);
+  }
+  #waveWrap {
+    cursor: pointer;
+  }
+  .queue-status {
+    color: var(--accent);
+    font-style: italic;
+  }
+  .leave-warning {
+    color: var(--accent2);
+    font-weight: 600;
+  }
+  .progress-track {
+    width: 100%;
+    height: 10px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 5px 0 0 5px;
+    transition: width 0.15s linear;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>Offline Pitch Cutter</h1>
+
+  <div class="card">
+    <div class="import-row">
+      <button class="btn primary" id="importBtn">Import Audio or Video</button>
+      <span class="file-name" id="fileName">No file selected</span>
+    </div>
+    <input type="file" id="fileInput" accept="audio/*,video/*" multiple>
+    <div id="libraryRow" class="library-row hidden"></div>
+    <div class="status" id="statusMsg"></div>
+    <div class="progress-track hidden" id="statusProgress"><div class="progress-fill" id="statusProgressFill"></div></div>
+    <div class="status queue-status hidden" id="queueStatus"></div>
+    <div class="status leave-warning" id="leaveWarning">Reloading, going back, or leaving this page will lose everything — the browser will ask you to confirm first.</div>
+  </div>
+  <div id="importWorkArea" style="display:none"></div>
+
+  <div id="editorSection" class="hidden">
+    <div class="card hidden" id="videoPreviewCard">
+      <div class="section-title">Video Preview</div>
+      <div id="videoContainer"></div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Trim</div>
+      <div id="waveWrap">
+        <canvas id="wave"></canvas>
+      </div>
+      <div class="trim-times">
+        <div class="time-field">
+          <label>Start</label>
+          <input type="text" id="startTime" inputmode="numeric" placeholder="0:00.00">
+        </div>
+        <div class="duration-badge" id="durationBadge">0:00.00</div>
+        <div class="time-field">
+          <label>End</label>
+          <input type="text" id="endTime" inputmode="numeric" placeholder="0:00.00">
+        </div>
+      </div>
+      <div class="transport-row playback-row">
+        <button class="btn" id="rewindBtn" title="Back 10 seconds">&#9664;&#9664; 10s</button>
+        <button class="btn wide" id="playBtn"><span aria-hidden="true">&#9654;</span> Play</button>
+        <button class="btn" id="forwardBtn" title="Forward 10 seconds">10s &#9654;&#9654;</button>
+      </div>
+      <div class="transport-row" style="margin-top:10px;">
+        <button class="btn primary wide" id="exportBtn">Export</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Transpose</div>
+      <div class="control-row">
+        <span class="control-label">Semitones</span>
+        <button class="stepper-btn" id="semiMinus">&minus;</button>
+        <input type="range" id="semiSlider" min="-12" max="12" step="1" value="0">
+        <button class="stepper-btn" id="semiPlus">+</button>
+        <span class="value-badge" id="semiValue">0</span>
+      </div>
+      <div class="control-hint">Whole half-steps. &plusmn;12 = a full octave up/down.</div>
+      <div class="control-row">
+        <span class="control-label">Fine Tune</span>
+        <button class="stepper-btn" id="centMinus">&minus;</button>
+        <input type="range" id="centSlider" min="-100" max="100" step="1" value="0">
+        <button class="stepper-btn" id="centPlus">+</button>
+        <span class="value-badge" id="centValue">0</span>
+      </div>
+      <div class="control-hint">Cents, for subtle tuning between semitones. 100 cents = 1 semitone.</div>
+      <div class="reset-link" id="resetPitch">Reset to 0</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // Nothing on this page is saved anywhere — everything (imports, the library, in-progress
+  // processing) lives only in memory for this tab. Always confirm before reload, back/forward
+  // navigation, or closing the tab, regardless of whether anything is actively importing —
+  // one misclick should never silently wipe it out.
+  window.addEventListener('beforeunload', function (e) {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  });
+
+  var AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  var audioCtx = null;
+
+  var mode = 'audio';         // 'audio' | 'video'
+  var decodedBuffer = null;   // AudioBuffer: decoded directly (audio) or captured from video's audio track
+  var trimStart = 0;          // seconds
+  var trimEnd = 0;            // seconds
+  var semitones = 0;
+  var cents = 0;
+
+  var playSource = null;
+  var isPlaying = false;
+  var syncRafId = null;
+
+  var currentVideoEl = null;
+  var currentVideoObjectUrl = null;
+
+  // Session media library: every imported file stays here (in memory, for this page
+  // session only) so switching between them doesn't require re-importing or, for
+  // video, re-running the real-time audio-capture pass a second time.
+  var mediaLibrary = []; // { id, name, mode, file, decodedBuffer, trimStart, trimEnd, semitones, cents, videoDuration }
+  var activeMediaId = null;
+  var nextMediaId = 1;
+
+  // Import queue: files wait here and are processed one at a time (video's real-time
+  // analysis pass in particular can take minutes), without blocking the Import button
+  // or disrupting whatever item is currently being edited.
+  var importQueue = [];
+  var isImporting = false;
+
+  var els = {
+    importBtn: document.getElementById('importBtn'),
+    fileInput: document.getElementById('fileInput'),
+    fileName: document.getElementById('fileName'),
+    libraryRow: document.getElementById('libraryRow'),
+    queueStatus: document.getElementById('queueStatus'),
+    statusProgress: document.getElementById('statusProgress'),
+    statusProgressFill: document.getElementById('statusProgressFill'),
+    importWorkArea: document.getElementById('importWorkArea'),
+    editorSection: document.getElementById('editorSection'),
+    videoPreviewCard: document.getElementById('videoPreviewCard'),
+    videoContainer: document.getElementById('videoContainer'),
+    wave: document.getElementById('wave'),
+    waveWrap: document.getElementById('waveWrap'),
+    startTime: document.getElementById('startTime'),
+    endTime: document.getElementById('endTime'),
+    durationBadge: document.getElementById('durationBadge'),
+    semiSlider: document.getElementById('semiSlider'),
+    semiValue: document.getElementById('semiValue'),
+    semiMinus: document.getElementById('semiMinus'),
+    semiPlus: document.getElementById('semiPlus'),
+    centSlider: document.getElementById('centSlider'),
+    centValue: document.getElementById('centValue'),
+    centMinus: document.getElementById('centMinus'),
+    centPlus: document.getElementById('centPlus'),
+    resetPitch: document.getElementById('resetPitch'),
+    playBtn: document.getElementById('playBtn'),
+    rewindBtn: document.getElementById('rewindBtn'),
+    forwardBtn: document.getElementById('forwardBtn'),
+    exportBtn: document.getElementById('exportBtn'),
+    statusMsg: document.getElementById('statusMsg')
+  };
+
+  function getAudioCtx() {
+    if (!audioCtx) audioCtx = new AudioContextClass();
+    return audioCtx;
+  }
+
+  // ---------- Live pitch-shift preview (real-time, ScriptProcessorNode) ----------
+  // A phase-vocoder pitch shifter: block FFT analysis tracks each frequency bin's
+  // true instantaneous frequency (via the standard phase-difference-from-expected
+  // method), then resynthesis remaps each analysis bin to a new bin index scaled by
+  // pitchRatio (a bin at frequency f ends up at f*pitchRatio) before inverse-FFT and
+  // windowed overlap-add. Analysis and synthesis use the same fixed hop — pitch and
+  // time are decoupled entirely in the frequency domain, so input and output sample
+  // counts always match 1:1 regardless of ratio; no separate resampling stage needed.
+  //
+  // This replaced an earlier granular (grain/ring-buffer) live shifter, which had a
+  // hard ceiling on smoothness: each grain's read pointer advanced at `pitchRatio`,
+  // not 1:1, so overlapping grains were independently time-warped copies of the same
+  // audio rather than phase-locked to each other. Verified via offline simulation
+  // before switching: near-perfect identity at ratio=1 (0% measured error), a single
+  // clean impulse response (no echo), 0.1-1.2% pitch accuracy across 0.5x-2x ratios
+  // (vs. 2-7% for the granular version), correct frequency-sweep tracking, and no
+  // detectable spectral leakage off a shifted 8-harmonic series (100% of energy
+  // landed on the expected shifted harmonics). The FFT itself was separately
+  // verified first (round-trip identity, a known pure-tone transform, and Parseval
+  // energy conservation) before trusting anything built on it.
+  //
+  // Deliberately built on the older, deprecated ScriptProcessorNode instead of
+  // AudioWorkletNode: AudioWorkletNode requires ctx.audioWorklet.addModule() to
+  // asynchronously fetch/compile a separate module (here, from a Blob URL), and
+  // that step has been observed to silently fail on some Android Chrome/WebView
+  // builds under file:// origins — exactly how this app is normally opened. Read
+  // via node.pitchRatio (a plain mutable property, not an AudioParam) so pitch
+  // changes apply on the very next processed hop with no automation involved.
+
+  // In-place iterative radix-2 Cooley-Tukey FFT on an interleaved
+  // [re0,im0,re1,im1,...] array. dir: -1 = forward, +1 = inverse (inverse includes
+  // the 1/N scaling). N must be a power of 2.
+  function fftInPlace(data, N, dir) {
+    for (var i = 1, j = 0; i < N; i++) {
+      var bit = N >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) {
+        var tr = data[2 * i], ti = data[2 * i + 1];
+        data[2 * i] = data[2 * j]; data[2 * i + 1] = data[2 * j + 1];
+        data[2 * j] = tr; data[2 * j + 1] = ti;
+      }
+    }
+    for (var len = 2; len <= N; len <<= 1) {
+      var ang = dir * 2 * Math.PI / len;
+      var wr0 = Math.cos(ang), wi0 = Math.sin(ang);
+      for (var i2 = 0; i2 < N; i2 += len) {
+        var curWr = 1, curWi = 0;
+        for (var j2 = 0; j2 < len / 2; j2++) {
+          var aRe = data[2 * (i2 + j2)], aIm = data[2 * (i2 + j2) + 1];
+          var bRe0 = data[2 * (i2 + j2 + len / 2)], bIm0 = data[2 * (i2 + j2 + len / 2) + 1];
+          var bRe = bRe0 * curWr - bIm0 * curWi;
+          var bIm = bRe0 * curWi + bIm0 * curWr;
+          data[2 * (i2 + j2)] = aRe + bRe;
+          data[2 * (i2 + j2) + 1] = aIm + bIm;
+          data[2 * (i2 + j2 + len / 2)] = aRe - bRe;
+          data[2 * (i2 + j2 + len / 2) + 1] = aIm - bIm;
+          var nWr = curWr * wr0 - curWi * wi0;
+          var nWi = curWr * wi0 + curWi * wr0;
+          curWr = nWr; curWi = nWi;
+        }
+      }
+    }
+    if (dir === 1) {
+      for (var k = 0; k < 2 * N; k++) data[k] /= N;
+    }
+  }
+
+  function createPitchShifterNode(ctx) {
+    var fftFrameSize = 2048;
+    var osamp = 4;
+    var stepSize = fftFrameSize / osamp; // 512 — analysis hop == synthesis hop
+    var halfN = fftFrameSize / 2;
+    var freqPerBin = ctx.sampleRate / fftFrameSize;
+    var expectedPhaseInc = 2 * Math.PI * stepSize / fftFrameSize;
+    var numChannels = 2;
+
+    var pvWindow = new Float32Array(fftFrameSize);
+    for (var wi = 0; wi < fftFrameSize; wi++) {
+      pvWindow[wi] = 0.5 - 0.5 * Math.cos((2 * Math.PI * wi) / (fftFrameSize - 1));
+    }
+
+    function makeChannelState() {
+      return {
+        frameBuf: new Float32Array(fftFrameSize),
+        outAccum: new Float32Array(fftFrameSize),
+        weightAccum: new Float32Array(fftFrameSize),
+        lastPhase: new Float32Array(halfN + 1),
+        sumPhase: new Float32Array(halfN + 1),
+        fftBuf: new Float32Array(fftFrameSize * 2),
+        anaFreq: new Float32Array(halfN + 1),
+        anaMagn: new Float32Array(halfN + 1),
+        synFreq: new Float32Array(halfN + 1),
+        synMagn: new Float32Array(halfN + 1)
+      };
+    }
+    var channelStates = [];
+    for (var cs = 0; cs < numChannels; cs++) channelStates.push(makeChannelState());
+
+    // Processes exactly one hop (stepSize samples) of one channel: slides the
+    // analysis window, forward-FFTs it, tracks each bin's true frequency via the
+    // phase-difference method, remaps bins by pitchRatio, inverse-FFTs, and
+    // overlap-adds into that channel's accumulator, writing the finished stepSize
+    // output samples into outHop.
+    function processHop(st, newSamples, pitchRatio, outHop) {
+      var keep = fftFrameSize - stepSize;
+      for (var i = 0; i < keep; i++) st.frameBuf[i] = st.frameBuf[i + stepSize];
+      for (var i2 = 0; i2 < stepSize; i2++) st.frameBuf[keep + i2] = newSamples[i2];
+
+      var fb = st.fftBuf;
+      for (var k = 0; k < fftFrameSize; k++) {
+        fb[2 * k] = st.frameBuf[k] * pvWindow[k];
+        fb[2 * k + 1] = 0;
+      }
+      fftInPlace(fb, fftFrameSize, -1);
+
+      for (var k1 = 0; k1 <= halfN; k1++) {
+        var re = fb[2 * k1], im = fb[2 * k1 + 1];
+        var magn = Math.sqrt(re * re + im * im);
+        var phase = Math.atan2(im, re);
+        var delta = phase - st.lastPhase[k1];
+        st.lastPhase[k1] = phase;
+        delta -= k1 * expectedPhaseInc;
+        delta -= 2 * Math.PI * Math.round(delta / (2 * Math.PI));
+        var binDeviation = delta * osamp / (2 * Math.PI);
+        st.anaFreq[k1] = (k1 + binDeviation) * freqPerBin;
+        st.anaMagn[k1] = magn;
+      }
+
+      for (var k2 = 0; k2 <= halfN; k2++) { st.synMagn[k2] = 0; st.synFreq[k2] = 0; }
+      for (var k3 = 0; k3 <= halfN; k3++) {
+        var destBin = Math.round(k3 * pitchRatio);
+        if (destBin >= 0 && destBin <= halfN) {
+          st.synMagn[destBin] += st.anaMagn[k3];
+          st.synFreq[destBin] = st.anaFreq[k3] * pitchRatio;
+        }
+      }
+
+      for (var k4 = 0; k4 <= halfN; k4++) {
+        var magn2 = st.synMagn[k4];
+        var freq = st.synFreq[k4];
+        var binDeviation2 = (freq - k4 * freqPerBin) / freqPerBin;
+        var deltaPhase = binDeviation2 * 2 * Math.PI / osamp;
+        deltaPhase += k4 * expectedPhaseInc;
+        st.sumPhase[k4] += deltaPhase;
+        var ph = st.sumPhase[k4];
+        fb[2 * k4] = magn2 * Math.cos(ph);
+        fb[2 * k4 + 1] = magn2 * Math.sin(ph);
+      }
+      fb[1] = 0;
+      fb[2 * halfN + 1] = 0;
+      for (var k5 = halfN + 1; k5 < fftFrameSize; k5++) {
+        var mirror = fftFrameSize - k5;
+        fb[2 * k5] = fb[2 * mirror];
+        fb[2 * k5 + 1] = -fb[2 * mirror + 1];
+      }
+
+      fftInPlace(fb, fftFrameSize, 1);
+
+      for (var n = 0; n < fftFrameSize; n++) {
+        st.outAccum[n] += fb[2 * n] * pvWindow[n];
+        st.weightAccum[n] += pvWindow[n] * pvWindow[n];
+      }
+
+      for (var o = 0; o < stepSize; o++) {
+        var w = st.weightAccum[o];
+        outHop[o] = w > 1e-6 ? st.outAccum[o] / w : 0;
+      }
+      var keep2 = fftFrameSize - stepSize;
+      for (var m = 0; m < keep2; m++) { st.outAccum[m] = st.outAccum[m + stepSize]; st.weightAccum[m] = st.weightAccum[m + stepSize]; }
+      for (var m2 = keep2; m2 < fftFrameSize; m2++) { st.outAccum[m2] = 0; st.weightAccum[m2] = 0; }
+    }
+
+    var node = ctx.createScriptProcessor(4096, numChannels, numChannels);
+    node.pitchRatio = 1;
+    var hopBuf = new Float32Array(stepSize); // reused scratch, one hop at a time
+
+    node.onaudioprocess = function (e) {
+      var ratio = node.pitchRatio;
+      var inBuf = e.inputBuffer;
+      var outBuf = e.outputBuffer;
+      var blockLength = outBuf.length; // always 4096, a clean multiple of stepSize
+
+      for (var c1 = 0; c1 < numChannels; c1++) {
+        var inCh = c1 < inBuf.numberOfChannels ? inBuf.getChannelData(c1) : null;
+        var outCh = outBuf.getChannelData(c1);
+        var st = channelStates[c1];
+        for (var pos = 0; pos < blockLength; pos += stepSize) {
+          for (var i3 = 0; i3 < stepSize; i3++) hopBuf[i3] = inCh ? inCh[pos + i3] : 0;
+          processHop(st, hopBuf, ratio, hopBuf);
+          for (var j3 = 0; j3 < stepSize; j3++) outCh[pos + j3] = hopBuf[j3];
+        }
+      }
+    };
+
+    return node;
+  }
+
+  function currentPitchRatio() {
+    return Math.pow(2, (semitones + cents / 100) / 12);
+  }
+
+  // The live pitch-shifter node currently driving preview playback, if any.
+  var liveShifterNode = null;
+
+  function updateLivePitchIfPlaying() {
+    if (liveShifterNode) {
+      liveShifterNode.pitchRatio = currentPitchRatio();
+    }
+  }
+
+  function setStatus(msg, isError) {
+    els.statusMsg.textContent = msg || '';
+    els.statusMsg.classList.toggle('error', !!isError);
+  }
+
+  // frac is 0-1, or null/undefined to hide the bar (done, failed, or not applicable).
+  function setProgress(frac) {
+    if (frac === null || frac === undefined) {
+      els.statusProgress.classList.add('hidden');
+      return;
+    }
+    var pct = Math.max(0, Math.min(100, Math.round(frac * 100)));
+    els.statusProgressFill.style.width = pct + '%';
+    els.statusProgress.classList.remove('hidden');
+  }
+
+  function fmtTime(sec) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    var m = Math.floor(sec / 60);
+    var s = sec - m * 60;
+    return m + ':' + (s < 10 ? '0' : '') + s.toFixed(2);
+  }
+
+  function parseTime(str) {
+    if (!str) return null;
+    str = str.trim();
+    var m = str.match(/^(\d+):(\d+(\.\d+)?)$/);
+    if (m) {
+      return parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+    }
+    var f = parseFloat(str);
+    return isNaN(f) ? null : f;
+  }
+
+  // ---------- Import ----------
+  els.importBtn.addEventListener('click', function () {
+    els.fileInput.click();
+  });
+
+  function cleanupPreviousMedia() {
+    if (currentVideoObjectUrl) {
+      URL.revokeObjectURL(currentVideoObjectUrl);
+      currentVideoObjectUrl = null;
+    }
+    if (currentVideoEl) {
+      try { currentVideoEl.pause(); } catch (e) {}
+      currentVideoEl.src = '';
+      try { currentVideoEl.load(); } catch (e) {}
+      currentVideoEl = null;
+    }
+    els.videoContainer.innerHTML = '';
+  }
+
+  function createFreshVideoElement() {
+    els.videoContainer.innerHTML = '';
+    var v = document.createElement('video');
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    // This is the VISIBLE preview element — it's only ever used for its picture.
+    // The real audio always comes from the separately-scheduled Web Audio pitch-shift
+    // chain, so this must be muted or its own native (unpitched) audio track plays
+    // right alongside that, audible as a doubled/echoed track. (Unlike the work
+    // element used for the one-time import capture pass, which must NOT be muted —
+    // see createWorkVideoElement.)
+    v.muted = true;
+    els.videoContainer.appendChild(v);
+    currentVideoEl = v;
+    return v;
+  }
+
+  // A throwaway, off-screen video element used only to run a video import's real-time
+  // audio-capture pass. Kept entirely separate from currentVideoEl/#videoContainer (the
+  // visible preview for whatever item is currently active) so that importing another
+  // video in the background never rips the active item's preview out of the DOM.
+  // Deliberately NOT muted: muting suppresses the signal reaching createMediaElementSource
+  // in Chrome, which would silently zero out the captured audio (unlike the visible
+  // preview element, this one is never played through the speakers for a listener —
+  // it only ever feeds the capture tap — so leaving it unmuted has no audible effect).
+  function createWorkVideoElement() {
+    var v = document.createElement('video');
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    els.importWorkArea.appendChild(v);
+    return v;
+  }
+
+  function destroyWorkVideoElement(v, objectUrl) {
+    try { v.pause(); } catch (e) {}
+    v.src = '';
+    try { v.load(); } catch (e) {}
+    if (v.parentNode) v.parentNode.removeChild(v);
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }
+
+  // ---------- Session media library ----------
+  // Every imported file is kept here (decoded buffer + its own trim/pitch settings)
+  // for the lifetime of this page, so switching between imports is instant and
+  // doesn't require re-running the (real-time, for video) import pass again.
+  function findLibraryItem(id) {
+    for (var i = 0; i < mediaLibrary.length; i++) {
+      if (mediaLibrary[i].id === id) return mediaLibrary[i];
+    }
+    return null;
+  }
+
+  function saveActiveStateToLibrary() {
+    var item = findLibraryItem(activeMediaId);
+    if (!item) return;
+    item.trimStart = trimStart;
+    item.trimEnd = trimEnd;
+    item.semitones = semitones;
+    item.cents = cents;
+  }
+
+  function renderLibraryChips() {
+    els.libraryRow.innerHTML = '';
+    if (mediaLibrary.length < 2) {
+      els.libraryRow.classList.add('hidden');
+      return;
+    }
+    els.libraryRow.classList.remove('hidden');
+    mediaLibrary.forEach(function (item) {
+      var chip = document.createElement('div');
+      chip.className = 'library-chip' + (item.id === activeMediaId ? ' active' : '');
+
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'library-chip-name';
+      nameSpan.textContent = item.name;
+      chip.appendChild(nameSpan);
+
+      var removeBtn = document.createElement('span');
+      removeBtn.className = 'library-chip-remove';
+      removeBtn.textContent = '×';
+      chip.appendChild(removeBtn);
+
+      chip.addEventListener('click', function (e) {
+        if (e.target === removeBtn) return;
+        if (item.id !== activeMediaId) activateLibraryItem(item);
+      });
+      removeBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        removeLibraryItem(item.id);
+      });
+
+      els.libraryRow.appendChild(chip);
+    });
+  }
+
+  function removeLibraryItem(id) {
+    var idx = -1;
+    for (var i = 0; i < mediaLibrary.length; i++) {
+      if (mediaLibrary[i].id === id) { idx = i; break; }
+    }
+    if (idx === -1) return;
+    var wasActive = (id === activeMediaId);
+    mediaLibrary.splice(idx, 1);
+
+    if (!wasActive) {
+      renderLibraryChips();
+      return;
+    }
+
+    stopPlayback();
+    cleanupPreviousMedia();
+    if (mediaLibrary.length > 0) {
+      activateLibraryItem(mediaLibrary[Math.min(idx, mediaLibrary.length - 1)]);
+    } else {
+      activeMediaId = null;
+      decodedBuffer = null;
+      els.fileName.textContent = 'No file selected';
+      els.editorSection.classList.add('hidden');
+      renderLibraryChips();
+    }
+  }
+
+  function refreshEditorUI() {
+    els.startTime.value = fmtTime(trimStart);
+    els.endTime.value = fmtTime(trimEnd);
+    updateDurationBadge();
+    els.editorSection.classList.remove('hidden');
+    envelopeCache = null;
+    drawWaveform();
+    setStatus('');
+    els.importBtn.disabled = false;
+    renderLibraryChips();
+  }
+
+  function activateLibraryItem(item) {
+    stopPlayback();
+    saveActiveStateToLibrary();
+    cleanupPreviousMedia();
+
+    activeMediaId = item.id;
+    mode = item.mode;
+    decodedBuffer = item.decodedBuffer;
+    trimStart = item.trimStart;
+    trimEnd = item.trimEnd;
+    semitones = item.semitones;
+    cents = item.cents;
+    els.fileName.textContent = item.name;
+    els.semiSlider.value = semitones;
+    els.centSlider.value = cents;
+    refreshPitchLabels();
+    els.importBtn.disabled = true;
+
+    if (item.mode === 'video') {
+      els.videoPreviewCard.classList.remove('hidden');
+      setStatus('Loading video preview...');
+      var url = URL.createObjectURL(item.file);
+      currentVideoObjectUrl = url;
+      var videoEl = createFreshVideoElement();
+
+      // Whenever this element is later torn down (cleanupPreviousMedia sets .src = ''
+      // and calls .load() when switching to a different item), that itself fires a
+      // spurious 'error' event — remove both listeners together so a stale error
+      // can't fire after a successful load and stomp a later status message.
+      function onMeta() {
+        videoEl.removeEventListener('loadedmetadata', onMeta);
+        videoEl.removeEventListener('error', onError);
+        videoEl.currentTime = trimStart;
+        refreshEditorUI();
+      }
+      function onError() {
+        videoEl.removeEventListener('loadedmetadata', onMeta);
+        videoEl.removeEventListener('error', onError);
+        setStatus('Could not reload this video file.', true);
+        els.importBtn.disabled = false;
+      }
+      videoEl.addEventListener('loadedmetadata', onMeta);
+      videoEl.addEventListener('error', onError);
+      videoEl.src = url;
+      videoEl.load();
+    } else {
+      els.videoPreviewCard.classList.add('hidden');
+      refreshEditorUI();
+    }
+  }
+
+  // ---------- Import queue ----------
+  // Selecting file(s) always adds them to the queue rather than blocking on the
+  // current import. This matters most for video: its real-time analysis pass can
+  // take minutes, and you shouldn't have to sit and wait before lining up the next
+  // file, or lose access to whatever you're already editing while it runs.
+  function renderImportQueueStatus() {
+    if (importQueue.length > 0) {
+      var names = importQueue.map(function (f) { return f.name; }).join(', ');
+      els.queueStatus.textContent = importQueue.length + ' queued to import: ' + names;
+      els.queueStatus.classList.remove('hidden');
+    } else {
+      els.queueStatus.classList.add('hidden');
+    }
+  }
+
+  function finishImportedItem(item) {
+    mediaLibrary.push(item);
+    if (activeMediaId === null) {
+      // Nothing active yet (first import, or the library was emptied) — reveal it.
+      activateLibraryItem(item);
+    } else {
+      // Something else is already active/being edited — don't yank it away, just
+      // add the new item to the library for whenever it's wanted.
+      renderLibraryChips();
+      setStatus('"' + item.name + '" imported — tap its chip above to switch to it.');
+    }
+  }
+
+  function setImportStatus(fileName, msg, isError) {
+    setStatus('"' + fileName + '": ' + msg, isError);
+  }
+
+  function importOneFile(file, onDone) {
+    setProgress(null);
+    var isVideo = file.type.indexOf('video') === 0 ||
+      (!file.type && /\.(mp4|mov|m4v|webm|mkv|avi|3gp)$/i.test(file.name));
+
+    if (!isVideo) {
+      setImportStatus(file.name, 'Decoding...');
+      var reader = new FileReader();
+      reader.onload = function (ev) {
+        var ctx = getAudioCtx();
+        ctx.decodeAudioData(ev.target.result.slice(0), function (buffer) {
+          var item = {
+            id: nextMediaId++, name: file.name, mode: 'audio', file: file,
+            decodedBuffer: buffer, trimStart: 0, trimEnd: buffer.duration,
+            semitones: 0, cents: 0, videoDuration: null
+          };
+          finishImportedItem(item);
+          onDone();
+        }, function () {
+          setImportStatus(file.name, 'Could not decode this file.', true);
+          onDone();
+        });
+      };
+      reader.onerror = function () {
+        setImportStatus(file.name, 'Could not read this file.', true);
+        onDone();
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
+    setImportStatus(file.name, 'Loading video...');
+    var url = URL.createObjectURL(file);
+    var videoEl = createWorkVideoElement();
+
+    // Tearing this element down later (destroyWorkVideoElement clears .src and calls
+    // .load()) itself fires a spurious 'error' event on an element with no source —
+    // so both listeners must remove each other, or that teardown "error" would fire
+    // after a successful import and stomp the success status with a false failure.
+    function detachLoadListeners() {
+      videoEl.removeEventListener('loadedmetadata', onMeta);
+      videoEl.removeEventListener('error', onError);
+    }
+
+    function onMeta() {
+      detachLoadListeners();
+      setImportStatus(file.name, 'Analyzing audio track... 0% (plays through once at normal speed — a ' +
+        fmtTime(videoEl.duration) + ' video takes about that long)');
+      setProgress(0);
+      captureVideoAudioTrack(videoEl, function (frac) {
+        setImportStatus(file.name, 'Analyzing audio track... ' + Math.round(frac * 100) + '%');
+        setProgress(frac);
+      }).then(function (buffer) {
+        var item = {
+          id: nextMediaId++, name: file.name, mode: 'video', file: file,
+          decodedBuffer: buffer, trimStart: 0, trimEnd: Math.min(buffer.duration, videoEl.duration),
+          semitones: 0, cents: 0, videoDuration: videoEl.duration
+        };
+        destroyWorkVideoElement(videoEl, url);
+        setProgress(null);
+        finishImportedItem(item);
+        if (buffer._leadingSilenceSuspicious) {
+          setImportStatus(item.name, 'the very start of the audio may be missing on this device/browser — check the beginning of the preview before exporting.', true);
+        }
+        onDone();
+      }).catch(function (err) {
+        destroyWorkVideoElement(videoEl, url);
+        setProgress(null);
+        setImportStatus(file.name, 'Could not read audio from this video: ' + err.message, true);
+        onDone();
+      });
+    }
+
+    function onError() {
+      detachLoadListeners();
+      destroyWorkVideoElement(videoEl, url);
+      setProgress(null);
+      setImportStatus(file.name, 'Could not load this video file.', true);
+      onDone();
+    }
+
+    videoEl.addEventListener('loadedmetadata', onMeta);
+    videoEl.addEventListener('error', onError);
+    videoEl.src = url;
+    videoEl.load();
+  }
+
+  function processImportQueue() {
+    if (isImporting || importQueue.length === 0) return;
+    var file = importQueue.shift();
+    renderImportQueueStatus();
+    isImporting = true;
+    importOneFile(file, function () {
+      isImporting = false;
+      processImportQueue();
+    });
+  }
+
+  els.fileInput.addEventListener('change', function (e) {
+    var files = Array.prototype.slice.call(e.target.files || []);
+    e.target.value = ''; // allow re-selecting the same file(s) again later
+    if (files.length === 0) return;
+    importQueue = importQueue.concat(files);
+    renderImportQueueStatus();
+    processImportQueue();
+  });
+
+  // Some Chrome builds have been observed to deliver silence for the first second or so
+  // when tapping a live-playing media element's audio via Web Audio, before real samples
+  // start flowing. Flag it if it looks like it happened, rather than silently ship a
+  // corrupted capture with the start of the audio missing.
+  function detectSuspiciousLeadingSilence(channelL, channelR, sampleRate) {
+    var windowSamples = Math.floor(0.4 * sampleRate);
+    if (channelL.length < windowSamples * 2) return false;
+    function maxAbsRange(arr, start, end) {
+      var m = 0;
+      for (var i = start; i < end; i++) {
+        var a = Math.abs(arr[i]);
+        if (a > m) m = a;
+      }
+      return m;
+    }
+    var leadMax = Math.max(
+      maxAbsRange(channelL, 0, windowSamples),
+      maxAbsRange(channelR, 0, windowSamples)
+    );
+    var restMax = Math.max(
+      maxAbsRange(channelL, windowSamples, channelL.length),
+      maxAbsRange(channelR, windowSamples, channelR.length)
+    );
+    return leadMax < 0.002 && restMax > 0.02;
+  }
+
+  // Plays the video through once (silently, via Web Audio) to capture its raw PCM samples.
+  // decodeAudioData cannot pull an audio track out of a muxed video container directly,
+  // so this is the only dependency-free way to get at it.
+  function captureVideoAudioTrack(videoEl, onProgress) {
+    return new Promise(function (resolve, reject) {
+      var ctx = getAudioCtx();
+      var source;
+      try {
+        source = ctx.createMediaElementSource(videoEl);
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      var bufferSize = 4096;
+      var processor = ctx.createScriptProcessor(bufferSize, 2, 2);
+      var chunksL = [];
+      var chunksR = [];
+      var totalLength = 0;
+      var finished = false;
+
+      function flatten(chunks, total) {
+        var out = new Float32Array(total);
+        var offset = 0;
+        for (var i = 0; i < chunks.length; i++) {
+          out.set(chunks[i], offset);
+          offset += chunks[i].length;
+        }
+        return out;
+      }
+
+      function finish() {
+        if (finished) return;
+        finished = true;
+        processor.onaudioprocess = null;
+        try { processor.disconnect(); } catch (e) {}
+        try { source.disconnect(); } catch (e) {}
+        videoEl.removeEventListener('ended', finish);
+
+        var channelL = flatten(chunksL, totalLength);
+        var channelR = flatten(chunksR, totalLength);
+        if (totalLength === 0) {
+          reject(new Error('no audio track found'));
+          return;
+        }
+        var outBuffer = ctx.createBuffer(2, totalLength, ctx.sampleRate);
+        outBuffer.copyToChannel(channelL, 0);
+        outBuffer.copyToChannel(channelR, 1);
+        outBuffer._leadingSilenceSuspicious = detectSuspiciousLeadingSilence(channelL, channelR, ctx.sampleRate);
+        resolve(outBuffer);
+      }
+
+      processor.onaudioprocess = function (e) {
+        var inBuf = e.inputBuffer;
+        chunksL.push(new Float32Array(inBuf.getChannelData(0)));
+        chunksR.push(new Float32Array(inBuf.getChannelData(1)));
+        totalLength += inBuf.length;
+        if (onProgress && videoEl.duration) {
+          onProgress(videoEl.currentTime / videoEl.duration);
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(ctx.destination);
+
+      videoEl.addEventListener('ended', finish);
+      videoEl.currentTime = 0;
+      videoEl.play().catch(function (err) { reject(err); });
+    });
+  }
+
+  // The audio-capture duration and the video element's own duration can differ slightly;
+  // always trim against whichever is smaller so trimEnd stays reachable by the video.
+  function maxTrimDuration() {
+    if (mode === 'video' && currentVideoEl && isFinite(currentVideoEl.duration)) {
+      return Math.min(decodedBuffer.duration, currentVideoEl.duration);
+    }
+    return decodedBuffer.duration;
+  }
+
+  // ---------- Waveform drawing ----------
+  var envelopeCache = null; // {min:[], max:[], samplesPerPx, dpr, width}
+
+  function computeEnvelope(width) {
+    var data = decodedBuffer.getChannelData(0);
+    var len = data.length;
+    var min = new Float32Array(width);
+    var max = new Float32Array(width);
+    var samplesPerPx = len / width;
+    for (var x = 0; x < width; x++) {
+      var start = Math.floor(x * samplesPerPx);
+      var end = Math.floor((x + 1) * samplesPerPx);
+      if (end <= start) end = start + 1;
+      if (end > len) end = len;
+      var mn = 1.0, mx = -1.0;
+      for (var i = start; i < end; i++) {
+        var v = data[i];
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+      if (mn > mx) { mn = 0; mx = 0; }
+      min[x] = mn;
+      max[x] = mx;
+    }
+    return { min: min, max: max };
+  }
+
+  function resizeCanvas() {
+    var canvas = els.wave;
+    var cssWidth = canvas.clientWidth || els.waveWrap.clientWidth;
+    var cssHeight = 120;
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(cssWidth * dpr));
+    canvas.height = Math.max(1, Math.round(cssHeight * dpr));
+    return { dpr: dpr, cssWidth: cssWidth, cssHeight: cssHeight };
+  }
+
+  function drawWaveform() {
+    if (!decodedBuffer) return;
+    var canvas = els.wave;
+    var dims = resizeCanvas();
+    var ctx = canvas.getContext('2d');
+    var W = canvas.width, H = canvas.height;
+    var dpr = dims.dpr;
+
+    if (!envelopeCache || envelopeCache.pixelWidth !== W) {
+      envelopeCache = computeEnvelope(W);
+      envelopeCache.pixelWidth = W;
+    }
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0c0d10';
+    ctx.fillRect(0, 0, W, H);
+
+    var mid = H / 2;
+    var duration = decodedBuffer.duration;
+    var startPx = (trimStart / duration) * W;
+    var endPx = (trimEnd / duration) * W;
+
+    // dim background waveform
+    ctx.strokeStyle = '#33385a';
+    drawEnvelopeLine(ctx, envelopeCache, W, H, mid, 0, W);
+
+    // trimmed region background highlight
+    ctx.fillStyle = 'rgba(91,140,255,0.12)';
+    ctx.fillRect(startPx, 0, Math.max(1, endPx - startPx), H);
+
+    // active waveform within trim
+    ctx.strokeStyle = '#5b8cff';
+    drawEnvelopeLine(ctx, envelopeCache, W, H, mid, startPx, endPx);
+
+    // handles
+    var handleW = Math.max(3 * dpr, 4);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(startPx - handleW / 2, 0, handleW, H);
+    ctx.fillRect(endPx - handleW / 2, 0, handleW, H);
+
+    // live playhead, while something is playing (either the Play button or a scrub tap)
+    var playheadT = currentPlayheadTime();
+    if (playheadT !== null) {
+      var playheadPx = (playheadT / duration) * W;
+      ctx.fillStyle = '#ffd166';
+      ctx.fillRect(Math.max(0, Math.min(W - 2, playheadPx - 1)), 0, 2, H);
+    }
+  }
+
+  function drawEnvelopeLine(ctx, env, W, H, mid, fromPx, toPx) {
+    ctx.beginPath();
+    var started = false;
+    for (var x = 0; x < W; x++) {
+      if (x < fromPx || x > toPx) { started = false; continue; }
+      var yMin = mid - env.min[x] * mid;
+      var yMax = mid - env.max[x] * mid;
+      if (!started) {
+        ctx.moveTo(x, yMax);
+        started = true;
+      }
+      ctx.lineTo(x, yMax);
+      ctx.lineTo(x, yMin);
+    }
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  window.addEventListener('resize', function () {
+    if (decodedBuffer) {
+      envelopeCache = null;
+      drawWaveform();
+    }
+  });
+
+  // ---------- Drag handles (Pointer Events) ----------
+  var dragTarget = null; // 'start' | 'end' | 'scrub' | null
+  var HANDLE_HIT_PX = 24;
+  // Position while actively dragging the scrub playhead (before release starts
+  // playback). Distinct from the live-playback playhead tracked elsewhere.
+  var manualScrubTime = null;
+
+  function pxToTime(px, width) {
+    var duration = decodedBuffer.duration;
+    var t = (px / width) * duration;
+    if (t < 0) t = 0;
+    if (t > duration) t = duration;
+    return t;
+  }
+
+  function timeToPx(t, width) {
+    return (t / decodedBuffer.duration) * width;
+  }
+
+  els.waveWrap.addEventListener('pointerdown', function (e) {
+    if (!decodedBuffer) return;
+    var rect = els.wave.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var width = rect.width;
+    var startPx = timeToPx(trimStart, width);
+    var endPx = timeToPx(trimEnd, width);
+
+    var distStart = Math.abs(x - startPx);
+    var distEnd = Math.abs(x - endPx);
+
+    if (distStart <= HANDLE_HIT_PX && distStart <= distEnd) {
+      dragTarget = 'start';
+    } else if (distEnd <= HANDLE_HIT_PX) {
+      dragTarget = 'end';
+    } else {
+      dragTarget = 'scrub';
+      stopPlayback(); // don't let a scrub-drag start on top of an already-playing preview
+      manualScrubTime = pxToTime(x, width);
+      previewFrameAt(manualScrubTime);
+      drawWaveform();
+    }
+    els.waveWrap.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  els.waveWrap.addEventListener('pointermove', function (e) {
+    if (!dragTarget || !decodedBuffer) return;
+    var rect = els.wave.getBoundingClientRect();
+    var x = e.clientX - rect.left;
+    var width = rect.width;
+    var t = pxToTime(x, width);
+
+    if (dragTarget === 'start') {
+      trimStart = Math.min(t, trimEnd - 0.02);
+      if (trimStart < 0) trimStart = 0;
+      els.startTime.value = fmtTime(trimStart);
+      previewFrameAt(trimStart);
+      updateDurationBadge();
+    } else if (dragTarget === 'end') {
+      trimEnd = Math.max(t, trimStart + 0.02);
+      if (trimEnd > maxTrimDuration()) trimEnd = maxTrimDuration();
+      els.endTime.value = fmtTime(trimEnd);
+      previewFrameAt(trimEnd);
+      updateDurationBadge();
+    } else if (dragTarget === 'scrub') {
+      manualScrubTime = Math.max(0, Math.min(t, maxTrimDuration()));
+      previewFrameAt(manualScrubTime);
+    }
+    drawWaveform();
+    e.preventDefault();
+  });
+
+  function previewFrameAt(t) {
+    // isPlaying is already false during a scrub-drag (stopPlayback() runs at drag
+    // start), so this guard only matters for the numeric start/end fields, where it
+    // avoids fighting a currently-running live preview's own seeking.
+    if (mode === 'video' && currentVideoEl && !isPlaying) {
+      try { currentVideoEl.currentTime = t; } catch (e) {}
+    }
+  }
+
+  function endDrag(e) {
+    if (dragTarget && e.pointerId != null) {
+      try { els.waveWrap.releasePointerCapture(e.pointerId); } catch (err) {}
+    }
+    if (dragTarget === 'scrub' && manualScrubTime !== null) {
+      var releasedAt = manualScrubTime;
+      manualScrubTime = null;
+      startScrubPreview(releasedAt);
+    }
+    dragTarget = null;
+  }
+  els.waveWrap.addEventListener('pointerup', endDrag);
+  els.waveWrap.addEventListener('pointercancel', endDrag);
+
+  // ---------- Numeric trim fields ----------
+  els.startTime.addEventListener('change', function () {
+    if (!decodedBuffer) return;
+    var t = parseTime(els.startTime.value);
+    if (t === null) { els.startTime.value = fmtTime(trimStart); return; }
+    trimStart = Math.max(0, Math.min(t, trimEnd - 0.02));
+    els.startTime.value = fmtTime(trimStart);
+    updateDurationBadge();
+    drawWaveform();
+    previewFrameAt(trimStart);
+  });
+
+  els.endTime.addEventListener('change', function () {
+    if (!decodedBuffer) return;
+    var t = parseTime(els.endTime.value);
+    if (t === null) { els.endTime.value = fmtTime(trimEnd); return; }
+    trimEnd = Math.min(maxTrimDuration(), Math.max(t, trimStart + 0.02));
+    els.endTime.value = fmtTime(trimEnd);
+    updateDurationBadge();
+    drawWaveform();
+    previewFrameAt(trimEnd);
+  });
+
+  function updateDurationBadge() {
+    els.durationBadge.textContent = fmtTime(Math.max(0, trimEnd - trimStart));
+  }
+
+  // ---------- Pitch controls ----------
+  function refreshPitchLabels() {
+    els.semiValue.textContent = (semitones > 0 ? '+' : '') + semitones;
+    els.centValue.textContent = (cents > 0 ? '+' : '') + cents;
+    updateLivePitchIfPlaying();
+  }
+
+  els.semiSlider.addEventListener('input', function () {
+    semitones = parseInt(els.semiSlider.value, 10);
+    refreshPitchLabels();
+  });
+  els.centSlider.addEventListener('input', function () {
+    cents = parseInt(els.centSlider.value, 10);
+    refreshPitchLabels();
+  });
+  els.semiMinus.addEventListener('click', function () {
+    semitones = Math.max(-12, semitones - 1);
+    els.semiSlider.value = semitones;
+    refreshPitchLabels();
+  });
+  els.semiPlus.addEventListener('click', function () {
+    semitones = Math.min(12, semitones + 1);
+    els.semiSlider.value = semitones;
+    refreshPitchLabels();
+  });
+  els.centMinus.addEventListener('click', function () {
+    cents = Math.max(-100, cents - 1);
+    els.centSlider.value = cents;
+    refreshPitchLabels();
+  });
+  els.centPlus.addEventListener('click', function () {
+    cents = Math.min(100, cents + 1);
+    els.centSlider.value = cents;
+    refreshPitchLabels();
+  });
+  els.resetPitch.addEventListener('click', function () {
+    semitones = 0;
+    cents = 0;
+    els.semiSlider.value = 0;
+    els.centSlider.value = 0;
+    refreshPitchLabels();
+  });
+
+  // ---------- DSP: trim + pitch shift (OLA time-stretch + resample) ----------
+
+  function getTrimmedChannelData(buffer, startSec, endSec) {
+    var sr = buffer.sampleRate;
+    var startSample = Math.floor(startSec * sr);
+    var endSample = Math.floor(endSec * sr);
+    if (endSample > buffer.length) endSample = buffer.length;
+    if (startSample < 0) startSample = 0;
+    var len = Math.max(1, endSample - startSample);
+    var channels = [];
+    for (var c = 0; c < buffer.numberOfChannels; c++) {
+      var src = buffer.getChannelData(c);
+      var out = new Float32Array(len);
+      for (var i = 0; i < len; i++) {
+        out[i] = src[startSample + i] || 0;
+      }
+      channels.push(out);
+    }
+    return { channels: channels, length: len, sampleRate: sr };
+  }
+
+  // Hann-windowed OLA time-stretch of a single Float32Array by `ratio`.
+  // ratio > 1 => output is longer (stretched); ratio < 1 => output is shorter.
+  // We then resample by `ratio` afterward to bring length back and shift pitch.
+  function olaTimeStretch(input, ratio, sampleRate) {
+    var grainMs = 60;
+    var grainSize = Math.max(256, Math.round(sampleRate * grainMs / 1000));
+    // make grainSize even
+    if (grainSize % 2 !== 0) grainSize++;
+    var hopIn = Math.round(grainSize / 2);       // 50% overlap on input (analysis hop)
+    var hopOut = Math.round(hopIn * ratio);       // synthesis hop stretched by ratio
+
+    var window = new Float32Array(grainSize);
+    for (var i = 0; i < grainSize; i++) {
+      window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (grainSize - 1));
+    }
+
+    var numGrains = Math.max(1, Math.ceil((input.length - grainSize) / hopIn) + 1);
+    var outLength = Math.ceil(numGrains * hopOut) + grainSize;
+
+    var output = new Float32Array(outLength);
+    var weight = new Float32Array(outLength);
+
+    for (var g = 0; g < numGrains; g++) {
+      var inStart = g * hopIn;
+      var outStart = Math.round(g * hopOut);
+      if (inStart >= input.length) break;
+
+      for (var j = 0; j < grainSize; j++) {
+        var srcIdx = inStart + j;
+        var dstIdx = outStart + j;
+        if (dstIdx >= outLength) break;
+        var sample = srcIdx < input.length ? input[srcIdx] : 0;
+        output[dstIdx] += sample * window[j];
+        weight[dstIdx] += window[j];
+      }
+    }
+
+    // Normalize by summed window weight to avoid amplitude wobble
+    for (var k = 0; k < outLength; k++) {
+      if (weight[k] > 1e-6) {
+        output[k] = output[k] / weight[k];
+      }
+    }
+
+    return output;
+  }
+
+  // Linear-interpolation resample to targetLength (brings duration back, shifts pitch)
+  function resampleLinear(input, targetLength) {
+    var output = new Float32Array(targetLength);
+    var srcLen = input.length;
+    if (srcLen === 0 || targetLength === 0) return output;
+    var ratio = (srcLen - 1) / Math.max(1, targetLength - 1);
+    for (var i = 0; i < targetLength; i++) {
+      var srcPos = i * ratio;
+      var idx0 = Math.floor(srcPos);
+      var idx1 = Math.min(idx0 + 1, srcLen - 1);
+      var frac = srcPos - idx0;
+      output[i] = input[idx0] * (1 - frac) + input[idx1] * frac;
+    }
+    return output;
+  }
+
+  // Processes the current pitch settings over [startSec, endSec) (defaults to the trim
+  // selection, used by export), returns an AudioBuffer covering that exact range.
+  function processCurrentSettings(startSec, endSec) {
+    var rangeStart = (typeof startSec === 'number') ? startSec : trimStart;
+    var rangeEnd = (typeof endSec === 'number') ? endSec : trimEnd;
+    var pitchRatio = Math.pow(2, (semitones + cents / 100) / 12);
+    var trimmed = getTrimmedChannelData(decodedBuffer, rangeStart, rangeEnd);
+    var targetLength = trimmed.length;
+    var sr = trimmed.sampleRate;
+
+    var outChannels = [];
+    for (var c = 0; c < trimmed.channels.length; c++) {
+      var ch = trimmed.channels[c];
+      if (Math.abs(pitchRatio - 1) < 1e-6) {
+        outChannels.push(ch.slice());
+        continue;
+      }
+      var stretched = olaTimeStretch(ch, pitchRatio, sr);
+      var resampled = resampleLinear(stretched, targetLength);
+      outChannels.push(resampled);
+    }
+
+    var ctx = getAudioCtx();
+    var outBuffer = ctx.createBuffer(outChannels.length, targetLength, sr);
+    for (var c2 = 0; c2 < outChannels.length; c2++) {
+      outBuffer.copyToChannel(outChannels[c2], c2);
+    }
+    return outBuffer;
+  }
+
+  // ---------- Preview playback ----------
+  var liveShifterNode = null;
+
+  // Tracks the live preview's timeline position (whichever kicked it off — the Play
+  // button or a scrub tap) so the waveform can draw a moving playhead.
+  var activePreviewStartSec = null;
+  var activePreviewCtxStartTime = null;
+  var activePreviewRangeEnd = null;
+
+  // Where Pause left off, so the next Play resumes instead of restarting from
+  // trimStart. Cleared by any hard stop (scrub elsewhere, reaching the natural end,
+  // switching files/library items).
+  var pausedAtSec = null;
+  var pausedRangeEnd = null;
+
+  function currentPlayheadTime() {
+    if (manualScrubTime !== null) return manualScrubTime;
+    if (!isPlaying || activePreviewStartSec === null || activePreviewCtxStartTime === null) return null;
+    return activePreviewStartSec + (getAudioCtx().currentTime - activePreviewCtxStartTime);
+  }
+
+  // Redraws the waveform every frame while something is playing, purely to animate
+  // the playhead marker. When videoEl is given, it also nudges the video element back
+  // in sync with the audio (Web Audio) clock, which is the authoritative timeline.
+  function startPreviewAnimationLoop(videoEl, ctx, audioStartCtxTime, previewStartSec) {
+    syncRafId = requestAnimationFrame(function loop() {
+      if (!isPlaying) return;
+      if (videoEl) {
+        var expected = previewStartSec + (ctx.currentTime - audioStartCtxTime);
+        if (Math.abs(videoEl.currentTime - expected) > 0.15) {
+          try { videoEl.currentTime = Math.min(expected, videoEl.duration || expected); } catch (e) {}
+        }
+      }
+      drawWaveform();
+      syncRafId = requestAnimationFrame(loop);
+    });
+  }
+
+  function buildTrimmedSourceBuffer(startSec, endSec) {
+    var trimmed = getTrimmedChannelData(decodedBuffer, startSec, endSec);
+    var ctx = getAudioCtx();
+    var buf = ctx.createBuffer(trimmed.channels.length, trimmed.length, trimmed.sampleRate);
+    for (var c = 0; c < trimmed.channels.length; c++) buf.copyToChannel(trimmed.channels[c], c);
+    return buf;
+  }
+
+  // Tap anywhere on the waveform (away from the trim handles) to preview from that
+  // point onward — independent of the current trim selection, so you can browse the
+  // whole file to decide where to cut, using the same live pitch-shifted engine.
+  function startScrubPreview(t) {
+    if (!decodedBuffer) return;
+    var fullEnd = maxTrimDuration();
+    if (t >= fullEnd - 0.05) return;
+    if (mode === 'video') {
+      playVideoPreview(t, fullEnd);
+    } else {
+      playAudioPreview(t, fullEnd);
+    }
+  }
+
+  // Tears down the active audio/video nodes without deciding what happens to the
+  // timeline position — stopPlayback() and pausePlayback() each finish that part
+  // differently (reset to trimStart vs. remember where to resume).
+  function teardownPlaybackNodes() {
+    if (playSource) {
+      try { playSource.onended = null; playSource.stop(); } catch (e) {}
+      playSource = null;
+    }
+    if (liveShifterNode) {
+      try { liveShifterNode.disconnect(); } catch (e) {}
+      liveShifterNode = null;
+    }
+    if (syncRafId) {
+      cancelAnimationFrame(syncRafId);
+      syncRafId = null;
+    }
+    if (mode === 'video' && currentVideoEl) {
+      try { currentVideoEl.pause(); } catch (e) {}
+    }
+    isPlaying = false;
+    activePreviewStartSec = null;
+    activePreviewCtxStartTime = null;
+    activePreviewRangeEnd = null;
+  }
+
+  // Sets the Play/Pause button's label together with its icon, so the two always
+  // stay in sync (an icon-only or text-only update would let them drift apart).
+  function setPlayBtnLabel(label) {
+    var icon = (label === 'Pause') ? '&#9646;&#9646;' : '&#9654;';
+    els.playBtn.innerHTML = '<span aria-hidden="true">' + icon + '</span> ' + label;
+  }
+
+  // A hard stop: resets to trimStart and forgets any resume position. Used whenever
+  // continuing from where playback was doesn't make sense — starting a fresh scrub,
+  // reaching the natural end of a clip, switching files or library items.
+  function stopPlayback() {
+    teardownPlaybackNodes();
+    pausedAtSec = null;
+    pausedRangeEnd = null;
+    manualScrubTime = null;
+    if (mode === 'video' && currentVideoEl) {
+      try { currentVideoEl.currentTime = trimStart; } catch (e) {}
+    }
+    setPlayBtnLabel('Play');
+    if (decodedBuffer) drawWaveform();
+  }
+
+  // Pause: remembers exactly where playback was (and what range it was playing
+  // within — the trim selection, or a scrub-to-end range) so the next Play resumes
+  // instead of restarting from trimStart.
+  function pausePlayback() {
+    var pausedPos = currentPlayheadTime();
+    var rangeEnd = activePreviewRangeEnd;
+    teardownPlaybackNodes();
+    setPlayBtnLabel('Play');
+    if (pausedPos !== null) {
+      pausedAtSec = Math.max(0, pausedPos);
+      pausedRangeEnd = rangeEnd;
+      manualScrubTime = pausedAtSec; // keep the marker visible at the resume point
+      if (mode === 'video' && currentVideoEl) {
+        try { currentVideoEl.currentTime = pausedAtSec; } catch (e) {}
+      }
+    }
+    drawWaveform();
+  }
+
+  els.playBtn.addEventListener('click', function () {
+    if (!decodedBuffer) return;
+
+    if (isPlaying) {
+      pausePlayback();
+      return;
+    }
+
+    var resumeStart = pausedAtSec;
+    var resumeEnd = pausedRangeEnd;
+    pausedAtSec = null;
+    pausedRangeEnd = null;
+
+    if (mode === 'video') {
+      playVideoPreview(resumeStart !== null ? resumeStart : undefined, resumeEnd !== null ? resumeEnd : undefined);
+    } else {
+      playAudioPreview(resumeStart !== null ? resumeStart : undefined, resumeEnd !== null ? resumeEnd : undefined);
+    }
+  });
+
+  // Jumps the preview position by deltaSec (negative to rewind), clamped to the
+  // clip. Behavior depends on what's currently happening, same as a scrub:
+  //  - mid-playback: tear down and restart the live preview at the new position,
+  //    within whatever range was already playing (the trim selection, or a
+  //    scrub-to-end range), so it keeps playing without missing a beat.
+  //  - paused: just relocate the remembered resume point (doesn't start playback).
+  //  - nothing played yet: behaves like tapping-and-releasing the waveform at that
+  //    point (starts a scrub preview there).
+  function skipBy(deltaSec) {
+    if (!decodedBuffer || els.playBtn.disabled) return;
+    var fullEnd = maxTrimDuration();
+
+    if (isPlaying) {
+      var cur = currentPlayheadTime();
+      if (cur === null) cur = trimStart;
+      var rangeEnd = activePreviewRangeEnd !== null ? activePreviewRangeEnd : fullEnd;
+      var newTime = Math.max(0, Math.min(cur + deltaSec, fullEnd));
+      teardownPlaybackNodes();
+      if (mode === 'video') {
+        playVideoPreview(newTime, rangeEnd);
+      } else {
+        playAudioPreview(newTime, rangeEnd);
+      }
+    } else if (pausedAtSec !== null) {
+      var newPaused = Math.max(0, Math.min(pausedAtSec + deltaSec, fullEnd));
+      pausedAtSec = newPaused;
+      manualScrubTime = newPaused;
+      previewFrameAt(newPaused);
+      drawWaveform();
+    } else {
+      var newScrub = Math.max(0, Math.min(trimStart + deltaSec, fullEnd));
+      startScrubPreview(newScrub);
+    }
+  }
+
+  els.rewindBtn.addEventListener('click', function () { skipBy(-10); });
+  els.forwardBtn.addEventListener('click', function () { skipBy(10); });
+
+  function playAudioPreview(startSec, endSec) {
+    var rangeStart = (typeof startSec === 'number') ? startSec : trimStart;
+    var rangeEnd = (typeof endSec === 'number') ? endSec : trimEnd;
+
+    els.playBtn.disabled = true;
+    els.exportBtn.disabled = true;
+
+    var ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+
+    try {
+      var buffer = buildTrimmedSourceBuffer(rangeStart, rangeEnd);
+      playSource = ctx.createBufferSource();
+      playSource.buffer = buffer;
+
+      liveShifterNode = createPitchShifterNode(ctx);
+      liveShifterNode.pitchRatio = currentPitchRatio();
+
+      playSource.connect(liveShifterNode).connect(ctx.destination);
+      playSource.onended = function () {
+        if (isPlaying) stopPlayback();
+      };
+      var startCtxTime = ctx.currentTime;
+      playSource.start();
+      isPlaying = true;
+      manualScrubTime = null;
+      activePreviewStartSec = rangeStart;
+      activePreviewCtxStartTime = startCtxTime;
+      activePreviewRangeEnd = rangeEnd;
+      setPlayBtnLabel('Pause');
+      setStatus('');
+      startPreviewAnimationLoop(null, ctx, startCtxTime, rangeStart);
+      els.playBtn.disabled = false;
+      els.exportBtn.disabled = false;
+    } catch (err) {
+      // Extremely unlikely (ScriptProcessorNode has been universally available for
+      // as long as Web Audio has existed) — fall back to a precomputed, non-live
+      // preview rather than fail outright. Pitch changes then require pressing Play
+      // again, but the requested range (resume position / scrub target) still plays
+      // correctly.
+      setStatus('Processing...');
+      setTimeout(function () {
+        try {
+          var fallbackBuffer = processCurrentSettings(rangeStart, rangeEnd);
+          playSource = ctx.createBufferSource();
+          playSource.buffer = fallbackBuffer;
+          playSource.connect(ctx.destination);
+          playSource.onended = function () {
+            if (isPlaying) stopPlayback();
+          };
+          var startCtxTime2 = ctx.currentTime;
+          playSource.start();
+          isPlaying = true;
+          manualScrubTime = null;
+          activePreviewStartSec = rangeStart;
+          activePreviewCtxStartTime = startCtxTime2;
+          activePreviewRangeEnd = rangeEnd;
+          setPlayBtnLabel('Pause');
+          setStatus('');
+          startPreviewAnimationLoop(null, ctx, startCtxTime2, rangeStart);
+        } catch (err2) {
+          setStatus('Playback failed: ' + err2.message, true);
+        } finally {
+          els.playBtn.disabled = false;
+          els.exportBtn.disabled = false;
+        }
+      }, 20);
+    }
+  }
+
+  function playVideoPreview(startSec, endSec) {
+    var rangeStart = (typeof startSec === 'number') ? startSec : trimStart;
+    var rangeEnd = (typeof endSec === 'number') ? endSec : trimEnd;
+
+    els.playBtn.disabled = true;
+    els.exportBtn.disabled = true;
+
+    var ctx = getAudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    var videoEl = currentVideoEl;
+
+    function startSyncedPlayback() {
+      var audioStartCtxTime = 0;
+      var startedAudio = false;
+
+      function onPlaying() {
+        videoEl.removeEventListener('playing', onPlaying);
+        if (startedAudio) return;
+        startedAudio = true;
+        audioStartCtxTime = ctx.currentTime;
+        // The AudioBufferSourceNode's own onended is the authoritative "done" signal —
+        // it fires deterministically after exactly buffer.duration seconds, unlike the
+        // video element (whose currentTime/ended can disagree with the audio's actual
+        // duration by a few hundred ms and would otherwise never satisfy a
+        // currentTime-based exit condition).
+        playSource.onended = function () {
+          if (isPlaying) stopPlayback();
+        };
+        playSource.start(0);
+        isPlaying = true;
+        manualScrubTime = null;
+        activePreviewStartSec = rangeStart;
+        activePreviewCtxStartTime = audioStartCtxTime;
+        activePreviewRangeEnd = rangeEnd;
+        setPlayBtnLabel('Pause');
+        els.playBtn.disabled = false;
+        els.exportBtn.disabled = false;
+        setStatus('');
+        startPreviewAnimationLoop(videoEl, ctx, audioStartCtxTime, rangeStart);
+      }
+
+      videoEl.addEventListener('playing', onPlaying);
+      videoEl.currentTime = rangeStart;
+      videoEl.play().catch(function (err) {
+        videoEl.removeEventListener('playing', onPlaying);
+        setStatus('Playback failed: ' + err.message, true);
+        els.playBtn.disabled = false;
+        els.exportBtn.disabled = false;
+      });
+    }
+
+    try {
+      var buffer = buildTrimmedSourceBuffer(rangeStart, rangeEnd);
+      playSource = ctx.createBufferSource();
+      playSource.buffer = buffer;
+
+      liveShifterNode = createPitchShifterNode(ctx);
+      liveShifterNode.pitchRatio = currentPitchRatio();
+
+      playSource.connect(liveShifterNode).connect(ctx.destination);
+      startSyncedPlayback();
+    } catch (err) {
+      // Extremely unlikely — see the comment on the audio-preview equivalent of
+      // this fallback. Still renders exactly [rangeStart, rangeEnd), just not live.
+      setStatus('Processing...');
+      setTimeout(function () {
+        try {
+          var fallbackBuffer = processCurrentSettings(rangeStart, rangeEnd);
+          playSource = ctx.createBufferSource();
+          playSource.buffer = fallbackBuffer;
+          playSource.connect(ctx.destination);
+          startSyncedPlayback();
+        } catch (err2) {
+          setStatus('Playback failed: ' + err2.message, true);
+          els.playBtn.disabled = false;
+          els.exportBtn.disabled = false;
+        }
+      }, 20);
+    }
+  }
+
+  // ---------- WAV encoding + export ----------
+  function encodeWav(buffer) {
+    var numChannels = buffer.numberOfChannels;
+    var sampleRate = buffer.sampleRate;
+    var numFrames = buffer.length;
+    var bytesPerSample = 2;
+    var blockAlign = numChannels * bytesPerSample;
+    var dataSize = numFrames * blockAlign;
+    var bufferSize = 44 + dataSize;
+
+    var arrayBuffer = new ArrayBuffer(bufferSize);
+    var view = new DataView(arrayBuffer);
+
+    function writeString(offset, str) {
+      for (var i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    }
+
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);          // fmt chunk size
+    view.setUint16(20, 1, true);           // PCM format
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);          // bits per sample
+    writeString(36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    var channelData = [];
+    for (var c = 0; c < numChannels; c++) {
+      channelData.push(buffer.getChannelData(c));
+    }
+
+    var offset = 44;
+    for (var i = 0; i < numFrames; i++) {
+      for (var c2 = 0; c2 < numChannels; c2++) {
+        var sample = channelData[c2][i];
+        sample = Math.max(-1, Math.min(1, sample));
+        var intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+        view.setInt16(offset, intSample, true);
+        offset += 2;
+      }
+    }
+
+    return arrayBuffer;
+  }
+
+  function pitchFilenameSuffix() {
+    if (semitones === 0 && cents === 0) return '';
+    var s = '_' + (semitones >= 0 ? '+' : '') + semitones + 'st';
+    if (cents !== 0) s += (cents >= 0 ? '+' : '') + cents + 'c';
+    return s;
+  }
+
+  // Saves a finished export to the viewer. Two different environments this page
+  // can run in need two different mechanisms:
+  //  - Opened as a plain local file (or any other ordinary web page): the classic
+  //    browser download link, exactly as before.
+  //  - Hosted inside a Claude artifact page: that viewer never grants a page raw
+  //    download permission (a normal <a download> click silently does nothing
+  //    there), so the file has to go through Claude's own `downloads` capability
+  //    instead, which shows the viewer an explicit save confirmation.
+  // window.claude is only ever present in the second case, so branching on it
+  // tells the two apart. Note the capability only allows a fixed extension
+  // allowlist that does NOT include plain .wav — video export (.mp4/.webm) works
+  // through it, but audio-only export doesn't, so that failure is caught and
+  // explained rather than left to fail silently or throw.
+  function triggerDownload(blob, filename) {
+    if (window.claude && typeof window.claude.use === 'function') {
+      window.claude.use('downloads').then(function (downloads) {
+        if (!downloads) {
+          setStatus('Saving files isn\'t available from this hosted page right now.', true);
+          return;
+        }
+        return downloads.save({ filename: filename, data: blob }).catch(function (err) {
+          if (err && err.code === 'declined') { setStatus(''); return; }
+          if (err && err.code === 'rejected_extension') {
+            setStatus('This hosted page can\'t save a .wav file directly (Claude only allows certain file types for saving here) — open the app from your saved local copy to export audio, or use video export instead.', true);
+            return;
+          }
+          setStatus('Could not save the file' + (err && err.message ? (': ' + err.message) : '.'), true);
+        });
+      });
+    } else {
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    }
+  }
+
+  els.exportBtn.addEventListener('click', function () {
+    if (!decodedBuffer) return;
+    if (mode === 'video') {
+      exportVideo();
+    } else {
+      exportAudioWav();
+    }
+  });
+
+  function exportAudioWav() {
+    setStatus('Processing...');
+    els.playBtn.disabled = true;
+    els.exportBtn.disabled = true;
+
+    setTimeout(function () {
+      try {
+        var buffer = processCurrentSettings();
+        var wavData = encodeWav(buffer);
+        var blob = new Blob([wavData], { type: 'audio/wav' });
+        triggerDownload(blob, 'pitch-cut' + pitchFilenameSuffix() + '.wav');
+        setStatus('Exported.');
+      } catch (err) {
+        setStatus('Export failed: ' + err.message, true);
+      } finally {
+        els.playBtn.disabled = false;
+        els.exportBtn.disabled = false;
+      }
+    }, 20);
+  }
+
+  // ---------- Video export: redraw frames to canvas + record combined video/audio stream ----------
+  var MP4_MIME_CANDIDATES = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1,mp4a.40.2',
+    'video/mp4'
+  ];
+  var WEBM_MIME_CANDIDATES = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ];
+
+  function pickSupportedMimeType() {
+    var all = MP4_MIME_CANDIDATES.concat(WEBM_MIME_CANDIDATES);
+    for (var i = 0; i < all.length; i++) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(all[i])) return all[i];
+    }
+    return '';
+  }
+
+  function exportVideo() {
+    stopPlayback();
+    setStatus('Preparing export...');
+    setProgress(null);
+    els.importBtn.disabled = true;
+    els.playBtn.disabled = true;
+    els.exportBtn.disabled = true;
+
+    setTimeout(function () {
+      var videoEl = currentVideoEl;
+      var cleanupFns = [];
+      function cleanupAndReenable() {
+        cleanupFns.forEach(function (fn) { try { fn(); } catch (e) {} });
+        els.importBtn.disabled = false;
+        els.playBtn.disabled = false;
+        els.exportBtn.disabled = false;
+      }
+
+      try {
+        var buffer = processCurrentSettings();
+        var w = videoEl.videoWidth || 640;
+        var h = videoEl.videoHeight || 360;
+
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var cctx = canvas.getContext('2d');
+
+        var ctx = getAudioCtx();
+        if (ctx.state === 'suspended') ctx.resume();
+
+        var destNode = ctx.createMediaStreamDestination();
+        var audioSource = ctx.createBufferSource();
+        audioSource.buffer = buffer;
+        audioSource.connect(destNode);
+
+        var videoStream = canvas.captureStream();
+        var combinedStream = new MediaStream();
+        videoStream.getVideoTracks().forEach(function (t) { combinedStream.addTrack(t); });
+        destNode.stream.getAudioTracks().forEach(function (t) { combinedStream.addTrack(t); });
+
+        var chosenType = pickSupportedMimeType();
+        var recorderOpts = { videoBitsPerSecond: 6000000, audioBitsPerSecond: 192000 };
+        if (chosenType) recorderOpts.mimeType = chosenType;
+
+        var recorder;
+        try {
+          recorder = new MediaRecorder(combinedStream, recorderOpts);
+        } catch (err) {
+          setStatus('Export failed: this browser cannot record video (' + err.message + ').', true);
+          setProgress(null);
+          cleanupAndReenable();
+          return;
+        }
+
+        var recordedChunks = [];
+        recorder.ondataavailable = function (e) {
+          if (e.data && e.data.size) recordedChunks.push(e.data);
+        };
+
+        var monitorInterval = null;
+        var drawing = false;
+
+        recorder.onstop = function () {
+          var outMime = recorder.mimeType || chosenType || 'video/webm';
+          var isMp4 = outMime.indexOf('mp4') !== -1;
+          var ext = isMp4 ? 'mp4' : 'webm';
+          var blob = new Blob(recordedChunks, { type: outMime });
+          triggerDownload(blob, 'pitch-cut' + pitchFilenameSuffix() + '.' + ext);
+
+          var note = isMp4 ? '' : ' (this browser could not record MP4, exported as WebM instead)';
+          setStatus('Exported.' + note);
+          setProgress(null);
+          cleanupAndReenable();
+        };
+
+        var stopped = false;
+        function stopExportLoop() {
+          if (stopped) return;
+          stopped = true;
+          drawing = false;
+          if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; }
+          try { videoEl.pause(); } catch (e) {}
+          try { videoEl.currentTime = trimStart; } catch (e) {}
+          try { audioSource.stop(); } catch (e) {}
+          if (recorder.state !== 'inactive') recorder.stop();
+        }
+        cleanupFns.push(stopExportLoop);
+
+        function drawFrame() {
+          if (!drawing) return;
+          cctx.drawImage(videoEl, 0, 0, w, h);
+          if (videoEl.requestVideoFrameCallback) {
+            videoEl.requestVideoFrameCallback(drawFrame);
+          } else {
+            requestAnimationFrame(drawFrame);
+          }
+        }
+
+        // The audio buffer's own end is the authoritative "done" signal — it fires
+        // deterministically after exactly buffer.duration seconds. The video element's
+        // currentTime/duration can disagree with that by a few hundred ms (container
+        // metadata vs. sample-counted audio), so it's used only for the progress % and
+        // as a stall fallback, never as the primary completion gate.
+        audioSource.onended = stopExportLoop;
+
+        var clipDuration = trimEnd - trimStart;
+        var exportStartWall = 0;
+
+        videoEl.currentTime = trimStart;
+        videoEl.addEventListener('playing', function onPlaying() {
+          videoEl.removeEventListener('playing', onPlaying);
+          drawing = true;
+          exportStartWall = performance.now();
+          recorder.start();
+          audioSource.start(0);
+          if (videoEl.requestVideoFrameCallback) {
+            videoEl.requestVideoFrameCallback(drawFrame);
+          } else {
+            requestAnimationFrame(drawFrame);
+          }
+          setProgress(0);
+          monitorInterval = setInterval(function () {
+            var elapsedWall = (performance.now() - exportStartWall) / 1000;
+            var frac = elapsedWall / clipDuration;
+            var pct = Math.round(Math.max(0, Math.min(100, frac * 100)));
+            setStatus('Exporting... ' + pct + '%');
+            setProgress(frac);
+            // Stall fallback: if wall time runs well past the clip length without the
+            // audio ending naturally, force completion rather than hang forever.
+            if (elapsedWall > clipDuration + 5) {
+              stopExportLoop();
+            }
+          }, 200);
+        });
+
+        videoEl.play().catch(function (err) {
+          setStatus('Export failed: ' + err.message, true);
+          setProgress(null);
+          cleanupAndReenable();
+        });
+      } catch (err) {
+        setStatus('Export failed: ' + err.message, true);
+        setProgress(null);
+        cleanupAndReenable();
+      }
+    }, 20);
+  }
+
+  refreshPitchLabels();
+})();
+</script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function (err) {
+        console.warn('Service worker registration failed:', err);
+      });
+    });
+  }
+</script>
+</body>
+</html>
