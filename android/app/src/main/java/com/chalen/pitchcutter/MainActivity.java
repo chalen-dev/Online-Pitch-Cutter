@@ -12,7 +12,9 @@ import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
   // Set by BackgroundGuardPlugin while a video import/export is running.
-  static volatile boolean guardActive = false;
+  // Tracked separately since one can still be active while the other starts.
+  static volatile boolean importGuardActive = false;
+  static volatile boolean exportGuardActive = false;
 
   @Override
   public void onCreate(Bundle savedInstanceState) {
@@ -38,7 +40,7 @@ public class MainActivity extends BridgeActivity {
   @Override
   protected void onUserLeaveHint() {
     super.onUserLeaveHint();
-    if (guardActive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    if ((importGuardActive || exportGuardActive) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       try {
         enterPictureInPictureMode(new PictureInPictureParams.Builder()
           .setAspectRatio(new Rational(9, 16))

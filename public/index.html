@@ -467,16 +467,19 @@
   // when the app is backgrounded. No-op on the plain web/PWA build, where
   // window.Capacitor doesn't exist.
   var backgroundGuard = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.BackgroundGuard) || null;
-  function startBackgroundGuard(label) {
-    if (backgroundGuard) backgroundGuard.start({ label: label }).catch(function () {});
+  // kind is 'import' or 'export' — each drives its own Android notification/
+  // progress bar (see BackgroundGuardPlugin/ImportExportService), so an import
+  // finishing up doesn't stomp an export's progress or vice versa.
+  function startBackgroundGuard(label, kind) {
+    if (backgroundGuard) backgroundGuard.start({ label: label, kind: kind }).catch(function () {});
   }
-  // Re-posts the same foreground notification with an updated progress bar —
-  // call this from the same progress callbacks that already drive setProgress().
-  function updateBackgroundGuard(label, progressPct) {
-    if (backgroundGuard) backgroundGuard.start({ label: label, progress: Math.round(progressPct) }).catch(function () {});
+  // Re-posts that kind's notification with an updated progress bar — call
+  // this from the same progress callbacks that already drive setProgress().
+  function updateBackgroundGuard(label, progressPct, kind) {
+    if (backgroundGuard) backgroundGuard.start({ label: label, progress: Math.round(progressPct), kind: kind }).catch(function () {});
   }
-  function stopBackgroundGuard() {
-    if (backgroundGuard) backgroundGuard.stop().catch(function () {});
+  function stopBackgroundGuard(kind) {
+    if (backgroundGuard) backgroundGuard.stop({ kind: kind }).catch(function () {});
   }
 
   // On the Android APK build, decodes a video's audio track natively via
@@ -1140,7 +1143,7 @@
 
     if (audioExtractorPlugin) {
       setImportStatus(file.name, 'Decoding...');
-      startBackgroundGuard('Importing "' + file.name + '"…');
+      startBackgroundGuard('Importing "' + file.name + '"…', 'import');
       blobToBase64(file).then(function (base64Data) {
         return audioExtractorPlugin.extractAudio({ base64Data: base64Data });
       }).then(function (result) {
@@ -1155,11 +1158,11 @@
           decodedBuffer: buffer, trimStart: 0, trimEnd: buffer.duration,
           semitones: 0, cents: 0, videoDuration: buffer.duration
         };
-        stopBackgroundGuard();
+        stopBackgroundGuard('import');
         finishImportedItem(item);
         onDone();
       }).catch(function (err) {
-        stopBackgroundGuard();
+        stopBackgroundGuard('import');
         setImportStatus(file.name, 'Could not read audio from this video: ' + err.message, true);
         onDone();
       });
@@ -1189,11 +1192,11 @@
       setImportStatus(file.name, 'Analyzing audio track... 0% (plays through once at normal speed — a ' +
         fmtTime(videoEl.duration) + ' video takes about that long)');
       setProgress(0);
-      startBackgroundGuard('Importing "' + file.name + '"…');
+      startBackgroundGuard('Importing "' + file.name + '"…', 'import');
       captureVideoAudioTrack(videoEl, function (frac) {
         setImportStatus(file.name, 'Analyzing audio track... ' + Math.round(frac * 100) + '%');
         setProgress(frac);
-        updateBackgroundGuard('Importing "' + file.name + '"…', frac * 100);
+        updateBackgroundGuard('Importing "' + file.name + '"…', frac * 100, 'import');
         queueItem.progress = frac;
         renderMediaList();
       }).then(function (buffer) {
@@ -1204,7 +1207,7 @@
         };
         destroyWorkVideoElement(videoEl, url);
         setProgress(null);
-        stopBackgroundGuard();
+        stopBackgroundGuard('import');
         finishImportedItem(item);
         if (buffer._leadingSilenceSuspicious) {
           setImportStatus(item.name, 'the very start of the audio may be missing on this device/browser — check the beginning of the preview before exporting.', true);
@@ -1213,7 +1216,7 @@
       }).catch(function (err) {
         destroyWorkVideoElement(videoEl, url);
         setProgress(null);
-        stopBackgroundGuard();
+        stopBackgroundGuard('import');
         setImportStatus(file.name, 'Could not read audio from this video: ' + err.message, true);
         onDone();
       });
@@ -2276,7 +2279,7 @@
     els.importBtn.disabled = true;
     els.playBtn.disabled = true;
     els.exportBtn.disabled = true;
-    startBackgroundGuard('Exporting video…');
+    startBackgroundGuard('Exporting video…', 'export');
 
     setTimeout(function () {
       var videoEl = currentVideoEl;
@@ -2286,7 +2289,7 @@
         els.importBtn.disabled = false;
         els.playBtn.disabled = false;
         els.exportBtn.disabled = false;
-        stopBackgroundGuard();
+        stopBackgroundGuard('export');
       }
 
       try {
@@ -2399,7 +2402,7 @@
             var pct = Math.round(Math.max(0, Math.min(100, frac * 100)));
             setStatus('Exporting... ' + pct + '%');
             setProgress(frac);
-            updateBackgroundGuard('Exporting video…', pct);
+            updateBackgroundGuard('Exporting video…', pct, 'export');
             // Stall fallback: if wall time runs well past the clip length without the
             // audio ending naturally, force completion rather than hang forever.
             if (elapsedWall > clipDuration + 5) {
