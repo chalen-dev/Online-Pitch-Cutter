@@ -1,0 +1,25 @@
+{
+  "name": "offline-pitch-cutter",
+  "version": "1.0.0",
+  "description": "A single-file, dependency-free HTML app for trimming an audio/video clip and shifting its pitch, with a live pitch-shifted preview and export to a downloadable file. Runs entirely client-side (Web Audio API, `<canvas>`/`MediaRecorder` for video) — no build step, no backend.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chalen-dev/Online-Pitch-Cutter.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/chalen-dev/Online-Pitch-Cutter/issues"
+  },
+  "homepage": "https://github.com/chalen-dev/Online-Pitch-Cutter#readme",
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2"
+  }
+}

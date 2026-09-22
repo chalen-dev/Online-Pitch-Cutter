@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Offline Pitch Cutter</string>
+    <string name="title_activity_main">Offline Pitch Cutter</string>
+    <string name="package_name">com.chalen.pitchcutter</string>
+    <string name="custom_url_scheme">com.chalen.pitchcutter</string>
+</resources>

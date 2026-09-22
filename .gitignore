@@ -1,3 +1,12 @@
 .firebase/
 firebase-debug.log
 node_modules/
+
+# Android — machine-specific / generated, not the custom native code we wrote
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/capacitor-cordova-android-plugins/build/
+android/.idea/
+*.iml

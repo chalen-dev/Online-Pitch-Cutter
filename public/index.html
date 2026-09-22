@@ -433,6 +433,18 @@
   var AudioContextClass = window.AudioContext || window.webkitAudioContext;
   var audioCtx = null;
 
+  // On the Android APK build (Capacitor), wraps a foreground service around
+  // video import/export so Android doesn't suspend the WebView's JS mid-pass
+  // when the app is backgrounded. No-op on the plain web/PWA build, where
+  // window.Capacitor doesn't exist.
+  var backgroundGuard = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.BackgroundGuard) || null;
+  function startBackgroundGuard(label) {
+    if (backgroundGuard) backgroundGuard.start({ label: label }).catch(function () {});
+  }
+  function stopBackgroundGuard() {
+    if (backgroundGuard) backgroundGuard.stop().catch(function () {});
+  }
+
   var mode = 'audio';         // 'audio' | 'video'
   var decodedBuffer = null;   // AudioBuffer: decoded directly (audio) or captured from video's audio track
   var trimStart = 0;          // seconds
@@ -1028,6 +1040,7 @@
       setImportStatus(file.name, 'Analyzing audio track... 0% (plays through once at normal speed — a ' +
         fmtTime(videoEl.duration) + ' video takes about that long)');
       setProgress(0);
+      startBackgroundGuard('Importing "' + file.name + '"…');
       captureVideoAudioTrack(videoEl, function (frac) {
         setImportStatus(file.name, 'Analyzing audio track... ' + Math.round(frac * 100) + '%');
         setProgress(frac);
@@ -1039,6 +1052,7 @@
         };
         destroyWorkVideoElement(videoEl, url);
         setProgress(null);
+        stopBackgroundGuard();
         finishImportedItem(item);
         if (buffer._leadingSilenceSuspicious) {
           setImportStatus(item.name, 'the very start of the audio may be missing on this device/browser — check the beginning of the preview before exporting.', true);
@@ -1047,6 +1061,7 @@
       }).catch(function (err) {
         destroyWorkVideoElement(videoEl, url);
         setProgress(null);
+        stopBackgroundGuard();
         setImportStatus(file.name, 'Could not read audio from this video: ' + err.message, true);
         onDone();
       });
@@ -2074,6 +2089,7 @@
     els.importBtn.disabled = true;
     els.playBtn.disabled = true;
     els.exportBtn.disabled = true;
+    startBackgroundGuard('Exporting video…');
 
     setTimeout(function () {
       var videoEl = currentVideoEl;
@@ -2083,6 +2099,7 @@
         els.importBtn.disabled = false;
         els.playBtn.disabled = false;
         els.exportBtn.disabled = false;
+        stopBackgroundGuard();
       }
 
       try {
