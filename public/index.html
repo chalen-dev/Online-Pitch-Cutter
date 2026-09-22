@@ -472,6 +472,7 @@
   // finishing up doesn't stomp an export's progress or vice versa.
   function startBackgroundGuard(label, kind) {
     if (backgroundGuard) backgroundGuard.start({ label: label, kind: kind }).catch(function () {});
+    requestWakeLock();
   }
   // Re-posts that kind's notification with an updated progress bar — call
   // this from the same progress callbacks that already drive setProgress().
@@ -480,7 +481,42 @@
   }
   function stopBackgroundGuard(kind) {
     if (backgroundGuard) backgroundGuard.stop({ kind: kind }).catch(function () {});
+    releaseWakeLock();
   }
+
+  // On the plain web/PWA build, mobile browsers will suspend this tab's audio
+  // capture/playback (and video frame decode) once the screen locks, which
+  // can leave a silent gap in imported/exported audio exactly where the lock
+  // happened. The Screen Wake Lock API stops the screen from locking on its
+  // own *inactivity timeout* while a job is running, which covers the common
+  // case (starting an import/export and leaving the phone alone). It can NOT
+  // stop a manual power-button press — browsers deliberately never let a
+  // webpage override that — so this is a partial mitigation, not a full fix;
+  // the Android app's native import/export don't need it since they don't
+  // depend on the screen being on at all. No-op inside the Android app.
+  var wakeLockSentinel = null;
+  var wakeLockWanted = false;
+  function requestWakeLock() {
+    wakeLockWanted = true;
+    if (window.Capacitor || !('wakeLock' in navigator) || wakeLockSentinel) return;
+    navigator.wakeLock.request('screen').then(function (sentinel) {
+      wakeLockSentinel = sentinel;
+      sentinel.addEventListener('release', function () { wakeLockSentinel = null; });
+    }).catch(function () {});
+  }
+  function releaseWakeLock() {
+    wakeLockWanted = false;
+    if (wakeLockSentinel) {
+      wakeLockSentinel.release().catch(function () {});
+      wakeLockSentinel = null;
+    }
+  }
+  // The browser force-releases the wake lock whenever the tab is hidden (e.g.
+  // switching apps), so re-request it once the tab is visible again if a job
+  // is still running and still wants it held.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && wakeLockWanted) requestWakeLock();
+  });
 
   // On the Android APK build, decodes a video's audio track natively via
   // MediaExtractor+MediaCodec (see AudioExtractorPlugin.java) instead of
