@@ -21,6 +21,7 @@ public class MainActivity extends BridgeActivity {
     registerPlugin(BackgroundGuardPlugin.class);
     registerPlugin(FileSaverPlugin.class);
     registerPlugin(AudioExtractorPlugin.class);
+    registerPlugin(VideoExportPlugin.class);
     super.onCreate(savedInstanceState);
 
     // Without this, the foreground service still runs on Android 13+, but its

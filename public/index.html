@@ -491,6 +491,27 @@
   // web/PWA build, which falls back to the real-time capture path.
   var audioExtractorPlugin = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.AudioExtractor) || null;
 
+  // On the Android APK build, does the trimmed-video export as a native
+  // MediaExtractor/MediaMuxer stream copy + MediaCodec audio re-encode (see
+  // VideoExportPlugin.java) instead of drawing frames through the WebView
+  // <video>/canvas/MediaRecorder pipeline. Like audioExtractorPlugin above,
+  // this has no Surface at all, so it keeps running with the screen off.
+  // No-op on the plain web/PWA build, which falls back to the real-time
+  // canvas-recording path (see exportOneJobFallback).
+  var videoExportPlugin = (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.VideoExport) || null;
+  if (videoExportPlugin) {
+    // At most one job (import or export) runs at a time across both queues
+    // (see isProcessingQueue), so it's safe to always attribute a progress
+    // event to exportQueue[0] whenever it's the one currently 'exporting'.
+    videoExportPlugin.addListener('exportProgress', function (data) {
+      var job = exportQueue[0];
+      if (!job || job.status !== 'exporting') return;
+      job.progress = data.progress;
+      renderMediaList();
+      updateBackgroundGuard('Exporting "' + job.name + '"…', data.progress * 100, 'export');
+    });
+  }
+
   var mode = 'audio';         // 'audio' | 'video'
   var decodedBuffer = null;   // AudioBuffer: decoded directly (audio) or captured from video's audio track
   var trimStart = 0;          // seconds
@@ -515,11 +536,31 @@
   // Import queue: files wait here and are processed one at a time (video's real-time
   // analysis pass in particular can take minutes), without blocking the Import button
   // or disrupting whatever item is currently being edited. Each entry is
-  // { id, file, name, status: 'queued'|'importing', progress } so the media list can
-  // render its own card for it, distinct from the mediaLibrary items it becomes.
+  // { id, seq, file, name, status: 'queued'|'importing', progress } so the media list
+  // can render its own card for it, distinct from the mediaLibrary items it becomes.
   var importQueue = [];
   var nextQueueId = 1;
-  var isImporting = false;
+
+  // Export queue: mirrors importQueue above, so exporting one item doesn't
+  // block queuing up exports of others (or editing something else) while it
+  // runs. Each entry snapshots the settings it needs at the moment Export was
+  // clicked — { id, seq, name, file, decodedBuffer, trimStart, trimEnd, semitones,
+  // cents, status: 'queued'|'exporting', progress, statusText } — so a later
+  // change to the currently-active item in the editor can't affect a job
+  // that's already queued.
+  var exportQueue = [];
+  var nextExportQueueId = 1;
+
+  // Import and export share one "only one job at a time" gate rather than
+  // running concurrently — decoding/encoding on native background threads
+  // plus the JS pitch-shift render competing for the same CPU cores was
+  // measurably slower than doing one at a time, with no real upside for a
+  // personal-use tool. seq (a shared, ever-increasing counter stamped on
+  // every queued item regardless of kind) decides which queue goes next when
+  // both have something waiting — whichever was queued first, first-come
+  // first-served across both lists.
+  var nextGlobalSeq = 1;
+  var isProcessingQueue = false;
 
   var els = {
     importBtn: document.getElementById('importBtn'),
@@ -863,6 +904,21 @@
     if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
 
+  // A throwaway, off-screen video element for the fallback (non-native)
+  // export path — same off-screen container as createWorkVideoElement, but
+  // MUST stay muted: unlike import (which taps this element's audio on
+  // purpose), export supplies its own separately pitch-shifted audio track,
+  // so an unmuted source here would audibly double up the original clip's
+  // unshifted audio out loud through the speakers while exporting.
+  function createExportWorkVideoElement() {
+    var v = document.createElement('video');
+    v.playsInline = true;
+    v.setAttribute('playsinline', '');
+    v.muted = true;
+    els.importWorkArea.appendChild(v);
+    return v;
+  }
+
   // ---------- Session media library ----------
   // Every imported file is kept here (decoded buffer + its own trim/pitch settings)
   // for the lifetime of this page, so switching between imports is instant and
@@ -938,13 +994,13 @@
     return card;
   }
 
-  // Single source of truth for the media list: every settled mediaLibrary item
-  // plus every in-flight importQueue item, each as its own card — replaces the
-  // old horizontal chip row (only shown once you had 2+ imports) and the plain
-  // "N queued to import: ..." text line.
+  // Single source of truth for the media list: every settled mediaLibrary item,
+  // every in-flight importQueue item, and every in-flight exportQueue item,
+  // each as its own card — replaces the old horizontal chip row (only shown
+  // once you had 2+ imports) and the plain "N queued to import: ..." text line.
   function renderMediaList() {
     els.mediaList.innerHTML = '';
-    var hasAny = mediaLibrary.length > 0 || importQueue.length > 0;
+    var hasAny = mediaLibrary.length > 0 || importQueue.length > 0 || exportQueue.length > 0;
     els.mediaList.classList.toggle('hidden', !hasAny);
     if (!hasAny) return;
 
@@ -977,6 +1033,30 @@
         progress: qItem.progress || 0,
         removable: qItem.status === 'queued',
         onRemove: function () { removeQueueItem(qItem.id); }
+      }));
+    });
+
+    exportQueue.forEach(function (job) {
+      var isExportingThis = job.status === 'exporting';
+      var meta;
+      if (!isExportingThis) {
+        meta = 'Queued to export';
+      } else if (job.statusText) {
+        // Phases without a meaningful live percentage (preparing, rendering
+        // the pitch-shifted audio) show their own label instead of a bar.
+        meta = job.statusText;
+      } else {
+        meta = 'Exporting... ' + Math.round((job.progress || 0) * 100) + '%';
+      }
+      els.mediaList.appendChild(buildMediaCard({
+        badge: 'Export',
+        name: job.name,
+        meta: meta,
+        processing: true,
+        showProgress: isExportingThis && !job.statusText,
+        progress: job.progress || 0,
+        removable: job.status === 'queued',
+        onRemove: function () { removeExportQueueItem(job.id); }
       }));
     });
   }
@@ -1018,6 +1098,18 @@
     }
     if (idx === -1) return;
     importQueue.splice(idx, 1);
+    renderMediaList();
+  }
+
+  // Same restriction as removeQueueItem above — a job already being
+  // processed has no cancellation path, so only 'queued' ones are removable.
+  function removeExportQueueItem(id) {
+    var idx = -1;
+    for (var i = 0; i < exportQueue.length; i++) {
+      if (exportQueue[i].id === id && exportQueue[i].status === 'queued') { idx = i; break; }
+    }
+    if (idx === -1) return;
+    exportQueue.splice(idx, 1);
     renderMediaList();
   }
 
@@ -1113,7 +1205,9 @@
 
   function importOneFile(queueItem, onDone) {
     var file = queueItem.file;
-    setProgress(null);
+    // Import never drives the shared banner's progress bar (see the comment
+    // in onMeta below) — export owns it exclusively, so this must not hide
+    // it out from under a concurrently-running export.
 
     if (!isVideoFile(file)) {
       setImportStatus(file.name, 'Decoding...');
@@ -1189,14 +1283,24 @@
 
     function onMeta() {
       detachLoadListeners();
-      setImportStatus(file.name, 'Analyzing audio track... 0% (plays through once at normal speed — a ' +
-        fmtTime(videoEl.duration) + ' video takes about that long)');
-      setProgress(0);
+      // The shared status banner (els.statusMsg/statusProgress) used to also
+      // be what a running export drove its own live percentage through.
+      // Both import and export now render their per-tick progress into their
+      // own card in the media list instead (see renderMediaList's
+      // 'Importing... N%'/'Exporting... N%' meta text) — sharing one banner
+      // between two things that can update several times a second used to
+      // make them fight over the same text/bar and flicker between
+      // "Analyzing audio track..." and "Exporting..." whenever an import and
+      // an export were in flight at the same time. Only the one-time
+      // "about to start" note stays on the banner, since a single
+      // message can't collide the way a repeating tick can.
+      setStatus('"' + file.name + '": plays through once at normal speed to analyze audio — a ' +
+        fmtTime(videoEl.duration) + ' video takes about that long.');
       startBackgroundGuard('Importing "' + file.name + '"…', 'import');
       captureVideoAudioTrack(videoEl, function (frac) {
-        setImportStatus(file.name, 'Analyzing audio track... ' + Math.round(frac * 100) + '%');
-        setProgress(frac);
         updateBackgroundGuard('Importing "' + file.name + '"…', frac * 100, 'import');
+        // Drives this item's own progress bar inside its queue card instead
+        // of the shared banner — see the comment above.
         queueItem.progress = frac;
         renderMediaList();
       }).then(function (buffer) {
@@ -1206,7 +1310,6 @@
           semitones: 0, cents: 0, videoDuration: videoEl.duration
         };
         destroyWorkVideoElement(videoEl, url);
-        setProgress(null);
         stopBackgroundGuard('import');
         finishImportedItem(item);
         if (buffer._leadingSilenceSuspicious) {
@@ -1215,7 +1318,6 @@
         onDone();
       }).catch(function (err) {
         destroyWorkVideoElement(videoEl, url);
-        setProgress(null);
         stopBackgroundGuard('import');
         setImportStatus(file.name, 'Could not read audio from this video: ' + err.message, true);
         onDone();
@@ -1236,19 +1338,37 @@
     videoEl.load();
   }
 
-  function processImportQueue() {
-    if (isImporting || importQueue.length === 0) return;
-    var queueItem = importQueue[0];
-    queueItem.status = 'importing';
-    isImporting = true;
-    renderMediaList();
-    importOneFile(queueItem, function () {
-      var idx = importQueue.indexOf(queueItem);
-      if (idx !== -1) importQueue.splice(idx, 1);
-      isImporting = false;
+  // Single dispatcher for both queues — see the isProcessingQueue comment
+  // above. Picks whichever of importQueue[0]/exportQueue[0] has the lower
+  // seq (i.e. was queued first) when both have something waiting.
+  function processQueues() {
+    if (isProcessingQueue) return;
+    var nextImport = importQueue.length ? importQueue[0] : null;
+    var nextExport = exportQueue.length ? exportQueue[0] : null;
+    if (!nextImport && !nextExport) return;
+
+    isProcessingQueue = true;
+    if (nextImport && (!nextExport || nextImport.seq < nextExport.seq)) {
+      nextImport.status = 'importing';
       renderMediaList();
-      processImportQueue();
-    });
+      importOneFile(nextImport, function () {
+        var idx = importQueue.indexOf(nextImport);
+        if (idx !== -1) importQueue.splice(idx, 1);
+        isProcessingQueue = false;
+        renderMediaList();
+        processQueues();
+      });
+    } else {
+      nextExport.status = 'exporting';
+      renderMediaList();
+      exportOneJob(nextExport, function () {
+        var idx = exportQueue.indexOf(nextExport);
+        if (idx !== -1) exportQueue.splice(idx, 1);
+        isProcessingQueue = false;
+        renderMediaList();
+        processQueues();
+      });
+    }
   }
 
   els.fileInput.addEventListener('change', function (e) {
@@ -1256,10 +1376,10 @@
     e.target.value = ''; // allow re-selecting the same file(s) again later
     if (files.length === 0) return;
     files.forEach(function (file) {
-      importQueue.push({ id: nextQueueId++, file: file, name: file.name, status: 'queued', progress: 0 });
+      importQueue.push({ id: nextQueueId++, seq: nextGlobalSeq++, file: file, name: file.name, status: 'queued', progress: 0 });
     });
     renderMediaList();
-    processImportQueue();
+    processQueues();
   });
 
   // Some Chrome builds have been observed to deliver silence for the first second or so
@@ -1730,11 +1850,14 @@
 
   // Processes the current pitch settings over [startSec, endSec) (defaults to the trim
   // selection, used by export), returns an AudioBuffer covering that exact range.
-  function processCurrentSettings(startSec, endSec) {
-    var rangeStart = (typeof startSec === 'number') ? startSec : trimStart;
-    var rangeEnd = (typeof endSec === 'number') ? endSec : trimEnd;
-    var pitchRatio = Math.pow(2, (semitones + cents / 100) / 12);
-    var trimmed = getTrimmedChannelData(decodedBuffer, rangeStart, rangeEnd);
+  // Does the actual pitch-shift/time-stretch render for an arbitrary source
+  // buffer + settings + range — pulled out of processCurrentSettings so a
+  // queued export job (which snapshots a specific library item's buffer and
+  // settings at queue time, not whatever's currently loaded in the editor)
+  // can render audio without depending on the live global editor state.
+  function renderPitchShiftedBuffer(sourceBuffer, semi, cnt, startSec, endSec) {
+    var pitchRatio = Math.pow(2, (semi + cnt / 100) / 12);
+    var trimmed = getTrimmedChannelData(sourceBuffer, startSec, endSec);
     var targetLength = trimmed.length;
     var sr = trimmed.sampleRate;
 
@@ -1756,6 +1879,15 @@
       outBuffer.copyToChannel(outChannels[c2], c2);
     }
     return outBuffer;
+  }
+
+  // Convenience wrapper for the currently-loaded editor item — everywhere
+  // that isn't a queued export job (live preview playback, audio-only
+  // export) still just wants "whatever's on screen right now".
+  function processCurrentSettings(startSec, endSec) {
+    var rangeStart = (typeof startSec === 'number') ? startSec : trimStart;
+    var rangeEnd = (typeof endSec === 'number') ? endSec : trimEnd;
+    return renderPitchShiftedBuffer(decodedBuffer, semitones, cents, rangeStart, rangeEnd);
   }
 
   // ---------- Preview playback ----------
@@ -2145,10 +2277,15 @@
     return arrayBuffer;
   }
 
-  function pitchFilenameSuffix() {
-    if (semitones === 0 && cents === 0) return '';
-    var s = '_' + (semitones >= 0 ? '+' : '') + semitones + 'st';
-    if (cents !== 0) s += (cents >= 0 ? '+' : '') + cents + 'c';
+  // semi/cnt default to the live editor globals so existing call sites
+  // (audio-only export) don't need to change; queued export jobs pass their
+  // own snapshotted values explicitly.
+  function pitchFilenameSuffix(semi, cnt) {
+    var s0 = (typeof semi === 'number') ? semi : semitones;
+    var c0 = (typeof cnt === 'number') ? cnt : cents;
+    if (s0 === 0 && c0 === 0) return '';
+    var s = '_' + (s0 >= 0 ? '+' : '') + s0 + 'st';
+    if (c0 !== 0) s += (c0 >= 0 ? '+' : '') + c0 + 'c';
     return s;
   }
 
@@ -2163,6 +2300,34 @@
       };
       reader.onerror = reject;
       reader.readAsDataURL(blob);
+    });
+  }
+
+  // Uploads a Blob to VideoExportPlugin's cache in bounded-size pieces via
+  // beginUpload/appendChunk instead of one blobToBase64() call for the whole
+  // thing. A single giant base64 string (a few minutes of raw PCM audio
+  // easily reaches tens of MB) was observed to throw a real
+  // java.lang.OutOfMemoryError inside the native bridge and crash the whole
+  // app — see the comment atop VideoExportPlugin.java. Chunking keeps every
+  // individual bridge call small regardless of clip length. Returns the
+  // uploadId to hand to prepareExport/finishExport.
+  function uploadBlobChunked(blob, onProgress) {
+    var CHUNK_BYTES = 3 * 1024 * 1024;
+    return videoExportPlugin.beginUpload({}).then(function (r) {
+      var uploadId = r.uploadId;
+      var offset = 0;
+      function next() {
+        if (offset >= blob.size) return Promise.resolve(uploadId);
+        var slice = blob.slice(offset, offset + CHUNK_BYTES);
+        return blobToBase64(slice).then(function (chunkBase64) {
+          return videoExportPlugin.appendChunk({ uploadId: uploadId, chunkBase64: chunkBase64 });
+        }).then(function () {
+          offset += CHUNK_BYTES;
+          if (onProgress) onProgress(Math.min(1, offset / blob.size));
+          return next();
+        });
+      }
+      return next();
     });
   }
 
@@ -2225,7 +2390,7 @@
   els.exportBtn.addEventListener('click', function () {
     if (!decodedBuffer) return;
     if (mode === 'video') {
-      exportVideo();
+      queueExportJob();
     } else {
       exportAudioWav();
     }
@@ -2252,7 +2417,132 @@
     }, 20);
   }
 
-  // ---------- Video export: redraw frames to canvas + record combined video/audio stream ----------
+  // ---------- Video export queue ----------
+  // Clicking Export snapshots the active item's file/buffer/settings into a
+  // job and drops it on exportQueue instead of exporting inline — this is
+  // what makes exporting non-blocking: you can keep editing (even switch to
+  // a different library item, or queue more exports) while previous jobs
+  // process in turn via the shared processQueues() dispatcher above.
+  function queueExportJob() {
+    var activeItem = null;
+    for (var i = 0; i < mediaLibrary.length; i++) {
+      if (mediaLibrary[i].id === activeMediaId) { activeItem = mediaLibrary[i]; break; }
+    }
+    if (!activeItem) return; // shouldn't happen — mode==='video' implies an active video item
+
+    exportQueue.push({
+      id: nextExportQueueId++,
+      seq: nextGlobalSeq++,
+      name: activeItem.name,
+      file: activeItem.file,
+      decodedBuffer: decodedBuffer,
+      trimStart: trimStart,
+      trimEnd: trimEnd,
+      semitones: semitones,
+      cents: cents,
+      status: 'queued',
+      progress: 0,
+      statusText: ''
+    });
+    renderMediaList();
+    processQueues();
+  }
+
+  function exportOneJob(job, onDone) {
+    if (videoExportPlugin) {
+      exportOneJobNative(job, onDone);
+    } else {
+      exportOneJobFallback(job, onDone);
+    }
+  }
+
+  // Native path (Android APK): stream-copy the trimmed video + a freshly
+  // AAC-encoded copy of the pitch-shifted audio, entirely through
+  // VideoExportPlugin — no WebView video playback, so this survives the
+  // screen being fully off, same as the native import path.
+  function exportOneJobNative(job, onDone) {
+    job.statusText = 'Uploading video…';
+    job.progress = 0;
+    renderMediaList();
+    startBackgroundGuard('Exporting "' + job.name + '"…', 'export');
+
+    function fail(msg) {
+      stopBackgroundGuard('export');
+      job.statusText = '';
+      setStatus('Export failed: ' + msg, true);
+      onDone();
+    }
+
+    uploadBlobChunked(job.file, function (frac) {
+      job.progress = frac;
+      job.statusText = '';
+      renderMediaList();
+    }).then(function (videoUploadId) {
+      return videoExportPlugin.prepareExport({ uploadId: videoUploadId, trimStart: job.trimStart });
+    }).then(function (prep) {
+      job.statusText = 'Rendering audio…';
+      renderMediaList();
+      // A hair of a delay so the queue card actually repaints with
+      // "Rendering audio…" before the (synchronous, potentially CPU-heavy)
+      // pitch-shift render below blocks the main thread.
+      return new Promise(function (resolve, reject) {
+        setTimeout(function () {
+          try {
+            // Render starting from actualStartSec (not job.trimStart) — see
+            // the big comment atop VideoExportPlugin.java for why the video
+            // copy can only start on a keyframe, and why audio must match it.
+            var buffer = renderPitchShiftedBuffer(job.decodedBuffer, job.semitones, job.cents, prep.actualStartSec, job.trimEnd);
+            // encodeWav()'s first 44 bytes are the WAV header — VideoExportPlugin
+            // wants raw PCM plus sampleRate/channelCount passed separately, since
+            // it never needs to parse a header back out.
+            var pcmBlob = new Blob([encodeWav(buffer)]).slice(44);
+            resolve({
+              exportId: prep.exportId,
+              pcmBlob: pcmBlob,
+              sampleRate: buffer.sampleRate,
+              channelCount: buffer.numberOfChannels
+            });
+          } catch (err) {
+            reject(err);
+          }
+        }, 20);
+      });
+    }).then(function (res) {
+      job.statusText = 'Uploading audio…';
+      job.progress = 0;
+      renderMediaList();
+      return uploadBlobChunked(res.pcmBlob, function (frac) {
+        job.progress = frac;
+        job.statusText = '';
+        renderMediaList();
+      }).then(function (audioUploadId) {
+        job.statusText = 'Encoding video…';
+        job.progress = 0;
+        renderMediaList();
+        return videoExportPlugin.finishExport({
+          exportId: res.exportId,
+          audioUploadId: audioUploadId,
+          sampleRate: res.sampleRate,
+          channelCount: res.channelCount,
+          trimEnd: job.trimEnd
+        });
+      });
+    }).then(function (result) {
+      // Numeric progress (from the exportProgress listener) is meaningful
+      // again from here on — clear statusText so the card shows the bar.
+      job.statusText = '';
+      return fetch(window.Capacitor.convertFileSrc(result.path)).then(function (r) { return r.blob(); });
+    }).then(function (blob) {
+      stopBackgroundGuard('export');
+      var filename = 'pitch-cut' + pitchFilenameSuffix(job.semitones, job.cents) + '.mp4';
+      triggerDownload(blob, filename);
+      onDone();
+    }).catch(function (err) {
+      fail(err && err.message ? err.message : String(err));
+    });
+  }
+
+  // ---------- Fallback path (plain web/PWA): redraw frames to canvas + record combined video/audio stream ----------
   var MP4_MIME_CANDIDATES = [
     'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
     'video/mp4;codecs=avc1,mp4a.40.2',
@@ -2272,154 +2562,171 @@
     return '';
   }
 
-  function exportVideo() {
-    stopPlayback();
-    setStatus('Preparing export...');
-    setProgress(null);
-    els.importBtn.disabled = true;
-    els.playBtn.disabled = true;
-    els.exportBtn.disabled = true;
-    startBackgroundGuard('Exporting video…', 'export');
+  // Runs against its own private, off-screen video element (see
+  // createExportWorkVideoElement) instead of the visible preview — that's
+  // what lets this run as a queued background job without interfering with
+  // (or being interrupted by) whatever the user is doing in the editor for a
+  // different item. This is real-time playback under the hood though (it has
+  // to be, to feed MediaRecorder), so — unlike the native path above — it
+  // does NOT survive the screen turning off.
+  function exportOneJobFallback(job, onDone) {
+    job.statusText = 'Preparing…';
+    renderMediaList();
+    startBackgroundGuard('Exporting "' + job.name + '"…', 'export');
 
     setTimeout(function () {
-      var videoEl = currentVideoEl;
+      var url = URL.createObjectURL(job.file);
+      var videoEl = createExportWorkVideoElement();
       var cleanupFns = [];
-      function cleanupAndReenable() {
+      function cleanupAndFinish() {
         cleanupFns.forEach(function (fn) { try { fn(); } catch (e) {} });
-        els.importBtn.disabled = false;
-        els.playBtn.disabled = false;
-        els.exportBtn.disabled = false;
+        destroyWorkVideoElement(videoEl, url);
         stopBackgroundGuard('export');
+        onDone();
       }
 
+      function onLoadError() {
+        job.statusText = '';
+        setStatus('Export failed: could not load this video file.', true);
+        cleanupAndFinish();
+      }
+      videoEl.addEventListener('error', onLoadError);
+
       try {
-        var buffer = processCurrentSettings();
-        var w = videoEl.videoWidth || 640;
-        var h = videoEl.videoHeight || 360;
+        var buffer = renderPitchShiftedBuffer(job.decodedBuffer, job.semitones, job.cents, job.trimStart, job.trimEnd);
 
-        var canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        var cctx = canvas.getContext('2d');
+        videoEl.addEventListener('loadedmetadata', function onMeta() {
+          videoEl.removeEventListener('loadedmetadata', onMeta);
+          job.statusText = '';
+          renderMediaList();
 
-        var ctx = getAudioCtx();
-        if (ctx.state === 'suspended') ctx.resume();
+          var w = videoEl.videoWidth || 640;
+          var h = videoEl.videoHeight || 360;
 
-        var destNode = ctx.createMediaStreamDestination();
-        var audioSource = ctx.createBufferSource();
-        audioSource.buffer = buffer;
-        audioSource.connect(destNode);
+          var canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          var cctx = canvas.getContext('2d');
 
-        var videoStream = canvas.captureStream();
-        var combinedStream = new MediaStream();
-        videoStream.getVideoTracks().forEach(function (t) { combinedStream.addTrack(t); });
-        destNode.stream.getAudioTracks().forEach(function (t) { combinedStream.addTrack(t); });
+          var ctx = getAudioCtx();
+          if (ctx.state === 'suspended') ctx.resume();
 
-        var chosenType = pickSupportedMimeType();
-        var recorderOpts = { videoBitsPerSecond: 6000000, audioBitsPerSecond: 192000 };
-        if (chosenType) recorderOpts.mimeType = chosenType;
+          var destNode = ctx.createMediaStreamDestination();
+          var audioSource = ctx.createBufferSource();
+          audioSource.buffer = buffer;
+          audioSource.connect(destNode);
 
-        var recorder;
-        try {
-          recorder = new MediaRecorder(combinedStream, recorderOpts);
-        } catch (err) {
-          setStatus('Export failed: this browser cannot record video (' + err.message + ').', true);
-          setProgress(null);
-          cleanupAndReenable();
-          return;
-        }
+          var videoStream = canvas.captureStream();
+          var combinedStream = new MediaStream();
+          videoStream.getVideoTracks().forEach(function (t) { combinedStream.addTrack(t); });
+          destNode.stream.getAudioTracks().forEach(function (t) { combinedStream.addTrack(t); });
 
-        var recordedChunks = [];
-        recorder.ondataavailable = function (e) {
-          if (e.data && e.data.size) recordedChunks.push(e.data);
-        };
+          var chosenType = pickSupportedMimeType();
+          var recorderOpts = { videoBitsPerSecond: 6000000, audioBitsPerSecond: 192000 };
+          if (chosenType) recorderOpts.mimeType = chosenType;
 
-        var monitorInterval = null;
-        var drawing = false;
-
-        recorder.onstop = function () {
-          var outMime = recorder.mimeType || chosenType || 'video/webm';
-          var isMp4 = outMime.indexOf('mp4') !== -1;
-          var ext = isMp4 ? 'mp4' : 'webm';
-          var blob = new Blob(recordedChunks, { type: outMime });
-          triggerDownload(blob, 'pitch-cut' + pitchFilenameSuffix() + '.' + ext);
-
-          var note = isMp4 ? '' : ' (this browser could not record MP4, exported as WebM instead)';
-          setStatus('Exported.' + note);
-          setProgress(null);
-          cleanupAndReenable();
-        };
-
-        var stopped = false;
-        function stopExportLoop() {
-          if (stopped) return;
-          stopped = true;
-          drawing = false;
-          if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; }
-          try { videoEl.pause(); } catch (e) {}
-          try { videoEl.currentTime = trimStart; } catch (e) {}
-          try { audioSource.stop(); } catch (e) {}
-          if (recorder.state !== 'inactive') recorder.stop();
-        }
-        cleanupFns.push(stopExportLoop);
-
-        function drawFrame() {
-          if (!drawing) return;
-          cctx.drawImage(videoEl, 0, 0, w, h);
-          if (videoEl.requestVideoFrameCallback) {
-            videoEl.requestVideoFrameCallback(drawFrame);
-          } else {
-            requestAnimationFrame(drawFrame);
+          var recorder;
+          try {
+            recorder = new MediaRecorder(combinedStream, recorderOpts);
+          } catch (err) {
+            setStatus('Export failed: this browser cannot record video (' + err.message + ').', true);
+            cleanupAndFinish();
+            return;
           }
-        }
 
-        // The audio buffer's own end is the authoritative "done" signal — it fires
-        // deterministically after exactly buffer.duration seconds. The video element's
-        // currentTime/duration can disagree with that by a few hundred ms (container
-        // metadata vs. sample-counted audio), so it's used only for the progress % and
-        // as a stall fallback, never as the primary completion gate.
-        audioSource.onended = stopExportLoop;
+          var recordedChunks = [];
+          recorder.ondataavailable = function (e) {
+            if (e.data && e.data.size) recordedChunks.push(e.data);
+          };
 
-        var clipDuration = trimEnd - trimStart;
-        var exportStartWall = 0;
+          var monitorInterval = null;
+          var drawing = false;
 
-        videoEl.currentTime = trimStart;
-        videoEl.addEventListener('playing', function onPlaying() {
-          videoEl.removeEventListener('playing', onPlaying);
-          drawing = true;
-          exportStartWall = performance.now();
-          recorder.start();
-          audioSource.start(0);
-          if (videoEl.requestVideoFrameCallback) {
-            videoEl.requestVideoFrameCallback(drawFrame);
-          } else {
-            requestAnimationFrame(drawFrame);
+          recorder.onstop = function () {
+            var outMime = recorder.mimeType || chosenType || 'video/webm';
+            var isMp4 = outMime.indexOf('mp4') !== -1;
+            var ext = isMp4 ? 'mp4' : 'webm';
+            var blob = new Blob(recordedChunks, { type: outMime });
+            triggerDownload(blob, 'pitch-cut' + pitchFilenameSuffix(job.semitones, job.cents) + '.' + ext);
+
+            var note = isMp4 ? '' : ' (this browser could not record MP4, exported as WebM instead)';
+            setStatus('Exported.' + note);
+            cleanupAndFinish();
+          };
+
+          var stopped = false;
+          function stopExportLoop() {
+            if (stopped) return;
+            stopped = true;
+            drawing = false;
+            if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; }
+            try { videoEl.pause(); } catch (e) {}
+            try { audioSource.stop(); } catch (e) {}
+            if (recorder.state !== 'inactive') recorder.stop();
           }
-          setProgress(0);
-          monitorInterval = setInterval(function () {
-            var elapsedWall = (performance.now() - exportStartWall) / 1000;
-            var frac = elapsedWall / clipDuration;
-            var pct = Math.round(Math.max(0, Math.min(100, frac * 100)));
-            setStatus('Exporting... ' + pct + '%');
-            setProgress(frac);
-            updateBackgroundGuard('Exporting video…', pct, 'export');
-            // Stall fallback: if wall time runs well past the clip length without the
-            // audio ending naturally, force completion rather than hang forever.
-            if (elapsedWall > clipDuration + 5) {
-              stopExportLoop();
+          cleanupFns.push(stopExportLoop);
+
+          function drawFrame() {
+            if (!drawing) return;
+            cctx.drawImage(videoEl, 0, 0, w, h);
+            if (videoEl.requestVideoFrameCallback) {
+              videoEl.requestVideoFrameCallback(drawFrame);
+            } else {
+              requestAnimationFrame(drawFrame);
             }
-          }, 200);
+          }
+
+          // The audio buffer's own end is the authoritative "done" signal — it fires
+          // deterministically after exactly buffer.duration seconds. The video element's
+          // currentTime/duration can disagree with that by a few hundred ms (container
+          // metadata vs. sample-counted audio), so it's used only for the progress % and
+          // as a stall fallback, never as the primary completion gate.
+          audioSource.onended = stopExportLoop;
+
+          var clipDuration = job.trimEnd - job.trimStart;
+          var exportStartWall = 0;
+
+          videoEl.currentTime = job.trimStart;
+          videoEl.addEventListener('playing', function onPlaying() {
+            videoEl.removeEventListener('playing', onPlaying);
+            drawing = true;
+            exportStartWall = performance.now();
+            recorder.start();
+            audioSource.start(0);
+            if (videoEl.requestVideoFrameCallback) {
+              videoEl.requestVideoFrameCallback(drawFrame);
+            } else {
+              requestAnimationFrame(drawFrame);
+            }
+            job.progress = 0;
+            renderMediaList();
+            monitorInterval = setInterval(function () {
+              var elapsedWall = (performance.now() - exportStartWall) / 1000;
+              var frac = elapsedWall / clipDuration;
+              var pct = Math.round(Math.max(0, Math.min(100, frac * 100)));
+              job.progress = frac;
+              renderMediaList();
+              updateBackgroundGuard('Exporting "' + job.name + '"…', pct, 'export');
+              // Stall fallback: if wall time runs well past the clip length without the
+              // audio ending naturally, force completion rather than hang forever.
+              if (elapsedWall > clipDuration + 5) {
+                stopExportLoop();
+              }
+            }, 200);
+          });
+
+          videoEl.play().catch(function (err) {
+            setStatus('Export failed: ' + err.message, true);
+            cleanupAndFinish();
+          });
         });
 
-        videoEl.play().catch(function (err) {
-          setStatus('Export failed: ' + err.message, true);
-          setProgress(null);
-          cleanupAndReenable();
-        });
+        videoEl.src = url;
+        videoEl.load();
       } catch (err) {
+        job.statusText = '';
         setStatus('Export failed: ' + err.message, true);
-        setProgress(null);
-        cleanupAndReenable();
+        cleanupAndFinish();
       }
     }, 20);
   }
@@ -2428,12 +2735,29 @@
 })();
 </script>
 <script>
-  if ('serviceWorker' in navigator) {
+  // Only registered for the hosted PWA — inside the Capacitor APK the whole
+  // app is already bundled and served locally by Capacitor's own asset
+  // loader, so a service worker adds no offline benefit there and only adds
+  // risk: its cache lives in the WebView's persistent storage, which
+  // survives an APK update installed over the existing app (confirmed
+  // directly — a same-package reinstall kept serving a service-worker-cached
+  // index.html from before the update, silently masking that new code had
+  // shipped). Gating this on window.Capacitor avoids that class of bug
+  // entirely for the packaged app.
+  if ('serviceWorker' in navigator && !window.Capacitor) {
     window.addEventListener('load', function () {
       navigator.serviceWorker.register('sw.js').catch(function (err) {
         console.warn('Service worker registration failed:', err);
       });
     });
+  } else if ('serviceWorker' in navigator && window.Capacitor) {
+    // Self-healing cleanup for any device that already has a service worker
+    // registered from an APK build before the gate above existed — otherwise
+    // it keeps intercepting fetches (and serving whatever it last cached)
+    // indefinitely, since registrations persist until explicitly removed.
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      regs.forEach(function (reg) { reg.unregister(); });
+    }).catch(function () {});
   }
 </script>
 </body>
