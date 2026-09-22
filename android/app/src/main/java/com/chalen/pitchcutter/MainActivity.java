@@ -17,6 +17,7 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     registerPlugin(BackgroundGuardPlugin.class);
+    registerPlugin(FileSaverPlugin.class);
     super.onCreate(savedInstanceState);
 
     // Without this, the foreground service still runs on Android 13+, but its

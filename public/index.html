@@ -1997,21 +1997,50 @@
     return s;
   }
 
-  // Saves a finished export to the viewer. Two different environments this page
-  // can run in need two different mechanisms:
-  //  - Opened as a plain local file (or any other ordinary web page): the classic
-  //    browser download link, exactly as before.
-  //  - Hosted inside a Claude artifact page: that viewer never grants a page raw
-  //    download permission (a normal <a download> click silently does nothing
-  //    there), so the file has to go through Claude's own `downloads` capability
-  //    instead, which shows the viewer an explicit save confirmation.
-  // window.claude is only ever present in the second case, so branching on it
-  // tells the two apart. Note the capability only allows a fixed extension
-  // allowlist that does NOT include plain .wav — video export (.mp4/.webm) works
-  // through it, but audio-only export doesn't, so that failure is caught and
-  // explained rather than left to fail silently or throw.
+  function blobToBase64(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onloadend = function () {
+        // reader.result is "data:<mime>;base64,<data>" — the plugin only wants the data.
+        var result = reader.result;
+        var idx = result.indexOf(',');
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Saves a finished export to the viewer. Three different environments this
+  // page can run in need three different mechanisms:
+  //  - The Android APK (Capacitor): its embedded WebView has no download
+  //    manager and never resolves a blob: URL handed to an <a download> click
+  //    (that silently no-ops), so the bytes go through the native FileSaver
+  //    plugin instead, which writes straight into the device's Downloads
+  //    folder via MediaStore.
+  //  - Hosted inside a Claude artifact page: that viewer never grants a page
+  //    raw download permission either, so the file goes through Claude's own
+  //    `downloads` capability, which shows the viewer an explicit save
+  //    confirmation. Note the capability only allows a fixed extension
+  //    allowlist that does NOT include plain .wav — video export (.mp4/.webm)
+  //    works through it, but audio-only export doesn't, so that failure is
+  //    caught and explained rather than left to fail silently or throw.
+  //  - Opened as a plain local file (or any other ordinary web page): the
+  //    classic browser download link, exactly as before.
   function triggerDownload(blob, filename) {
-    if (window.claude && typeof window.claude.use === 'function') {
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.FileSaver) {
+      blobToBase64(blob).then(function (base64Data) {
+        return window.Capacitor.Plugins.FileSaver.saveToDownloads({
+          filename: filename,
+          mimeType: blob.type || 'application/octet-stream',
+          base64Data: base64Data
+        });
+      }).then(function () {
+        setStatus('Saved to Downloads: ' + filename);
+      }).catch(function (err) {
+        setStatus('Could not save the file' + (err && err.message ? (': ' + err.message) : '.'), true);
+      });
+    } else if (window.claude && typeof window.claude.use === 'function') {
       window.claude.use('downloads').then(function (downloads) {
         if (!downloads) {
           setStatus('Saving files isn\'t available from this hosted page right now.', true);
